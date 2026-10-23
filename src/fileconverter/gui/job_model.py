@@ -10,6 +10,7 @@ from fileconverter.core.errors import (
     ConversionError,
     InvalidInputError,
     InvalidOptionError,
+    MissingDependencyError,
     OutputError,
     UnsupportedConversionError,
     UnsupportedFormatError,
@@ -178,6 +179,8 @@ class JobTableModel(QAbstractTableModel):
 
     def _error_hint(self, error: ConversionError) -> str:
         """A short 'what to do next' sentence for each failure category."""
+        if isinstance(error, MissingDependencyError):
+            return self.tr("Install the missing tool, then restart the application.")
         if isinstance(error, InvalidInputError):
             return self.tr("Check that the file exists and is not damaged.")
         if isinstance(error, UnsupportedFormatError):

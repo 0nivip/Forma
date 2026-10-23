@@ -15,6 +15,7 @@ from fileconverter.app import build_registry
 from fileconverter.conversion.runner import run_job
 from fileconverter.core.models import ConversionRequest, JobStatus
 from fileconverter.core.registry import FormatRegistry
+from fileconverter.infrastructure.ffmpeg import find_ffmpeg
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
-    registry = build_registry()
+    registry = build_registry(find_ffmpeg())
     if args.command == "formats":
         return _list_formats(registry)
     return _convert(registry, args)
@@ -50,6 +51,8 @@ def _list_formats(registry: FormatRegistry) -> int:
     for fmt in registry.formats():
         targets = ", ".join(target.id for target in registry.targets_for(fmt.id)) or "-"
         print(f"{fmt.id:6} ({', '.join(fmt.extensions)}) -> {targets}")
+        if reason := registry.unavailable_reason(fmt.id):
+            print(f"       note: {reason}")
     return 0
 
 

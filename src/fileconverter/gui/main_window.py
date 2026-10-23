@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from fileconverter.core.errors import ConversionError
-from fileconverter.core.formats import Format
+from fileconverter.core.formats import Format, FormatFamily
 from fileconverter.core.models import ConversionRequest, ConversionResult, JobStatus
 from fileconverter.core.registry import FormatRegistry
 from fileconverter.gui.job_model import Column, JobTableModel
@@ -180,18 +180,32 @@ class MainWindow(QMainWindow):
 
         targets = self._registry.targets_for(source_format.id)
         if not targets:
-            problem = self.tr("{0} files cannot be converted yet.").format(
-                source_format.display_name
-            )
+            # E.g. "needs FFmpeg, which was not found" - more useful than a generic text.
+            problem = self._registry.unavailable_reason(source_format.id) or self.tr(
+                "{0} files cannot be converted yet."
+            ).format(source_format.display_name)
             return Job(job_id, path, state=JobState.UNSUPPORTED, problem=problem)
         target = next((t for t in targets if t.id == self._preferred_target), targets[0])
         return Job(job_id, path, targets, target)
 
     def _choose_files(self) -> None:
-        patterns = " ".join(
-            f"*{extension}" for fmt in self._registry.formats() for extension in fmt.extensions
+        def patterns(family: FormatFamily | None) -> str:
+            return " ".join(
+                f"*{extension}"
+                for fmt in self._registry.formats()
+                if family is None or fmt.family is family
+                for extension in fmt.extensions
+            )
+
+        file_filter = ";;".join(
+            [
+                self.tr("All supported files ({0})").format(patterns(None)),
+                self.tr("Images ({0})").format(patterns(FormatFamily.IMAGE)),
+                self.tr("Video ({0})").format(patterns(FormatFamily.VIDEO)),
+                self.tr("Audio ({0})").format(patterns(FormatFamily.AUDIO)),
+                self.tr("All files (*)"),
+            ]
         )
-        file_filter = self.tr("Supported files ({0});;All files (*)").format(patterns)
         names, _ = QFileDialog.getOpenFileNames(self, self.tr("Add Files"), "", file_filter)
         self.add_files(Path(name) for name in names)
 

@@ -30,6 +30,10 @@ class OutputError(ConversionError):
     """The output could not be written or verified."""
 
 
+class MissingDependencyError(ConversionError):
+    """A required external tool (e.g. FFmpeg) or one of its components is not available."""
+
+
 class ConversionCancelled(Exception):
     """Raised inside a converter when the user cancelled the job.
 

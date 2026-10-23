@@ -81,7 +81,7 @@ def test_route_with_unknown_format_fails():
     registry = FormatRegistry()
     registry.register_formats(BUILTIN_FORMATS)
     with pytest.raises(ValueError, match="unknown format"):
-        registry.register_converter(_Backend([Route("png", "mp3")]))
+        registry.register_converter(_Backend([Route("png", "no-such-format")]))
 
 
 QUALITY = IntOption("quality", "Quality", default=90, minimum=1, maximum=95)

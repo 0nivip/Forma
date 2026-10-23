@@ -28,6 +28,9 @@ class JobContext:
         self._on_progress = on_progress
         self.warnings: list[str] = []
 
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
+
     def raise_if_cancelled(self) -> None:
         if self._cancel_event.is_set():
             raise ConversionCancelled()

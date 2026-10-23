@@ -29,4 +29,21 @@ def no_blocking_dialogs(monkeypatch):
 
 @pytest.fixture
 def registry() -> FormatRegistry:
-    return build_registry()
+    """Image-only registry: independent of whether FFmpeg is installed on this machine."""
+    return build_registry(None)
+
+
+@pytest.fixture(scope="session")
+def ffmpeg_tools():
+    """The real FFmpeg on this machine, or skip the test if there is none."""
+    from fileconverter.infrastructure.ffmpeg import find_ffmpeg
+
+    tools = find_ffmpeg()
+    if tools is None:
+        pytest.skip("FFmpeg/ffprobe not installed")
+    return tools
+
+
+@pytest.fixture
+def media_registry(ffmpeg_tools) -> FormatRegistry:
+    return build_registry(ffmpeg_tools)

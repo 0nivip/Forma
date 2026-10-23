@@ -6,6 +6,7 @@ from pathlib import Path
 from fileconverter.core.converter import Converter
 from fileconverter.core.errors import (
     InvalidInputError,
+    MissingDependencyError,
     UnsupportedConversionError,
     UnsupportedFormatError,
 )
@@ -17,6 +18,8 @@ class FormatRegistry:
     def __init__(self) -> None:
         self._formats: dict[str, Format] = {}
         self._routes: dict[tuple[str, str], tuple[Route, Converter]] = {}
+        # format id -> why conversions to/from it are unavailable (e.g. FFmpeg missing)
+        self._unavailable: dict[str, str] = {}
 
     # --- registration -------------------------------------------------------
 
@@ -36,7 +39,16 @@ class FormatRegistry:
                 raise ValueError(f"Route {route.source} -> {route.target} is already registered.")
             self._routes[key] = (route, converter)
 
+    def note_unavailable(self, format_id: str, reason: str) -> None:
+        """Record an actionable explanation for a format that has no (or fewer) routes."""
+        if format_id not in self._formats:
+            raise ValueError(f"Unknown format '{format_id}'.")
+        self._unavailable[format_id] = reason
+
     # --- queries ------------------------------------------------------------
+
+    def unavailable_reason(self, format_id: str) -> str | None:
+        return self._unavailable.get(format_id)
 
     def get_format(self, format_id: str) -> Format:
         try:
@@ -55,9 +67,13 @@ class FormatRegistry:
         try:
             return self._routes[(source_id, target_id)]
         except KeyError:
-            raise UnsupportedConversionError(
-                f"Conversion from {source_id} to {target_id} is not supported."
-            ) from None
+            pass
+        reason = self._unavailable.get(target_id) or self._unavailable.get(source_id)
+        if reason and source_id != target_id:
+            raise MissingDependencyError(reason)
+        raise UnsupportedConversionError(
+            f"Conversion from {source_id} to {target_id} is not supported."
+        )
 
     def detect_format(self, path: Path) -> Format:
         """Identify a file's format from its content (magic bytes), not its extension.
@@ -72,7 +88,11 @@ class FormatRegistry:
 
         if not header:
             raise InvalidInputError(f"'{path.name}' is empty.")
-        for fmt in self._formats.values():
-            if fmt.matches_header(header):
-                return fmt
-        raise UnsupportedFormatError(f"'{path.name}' is not in a supported format.")
+        strength, best = max(
+            ((fmt.match_strength(header), fmt) for fmt in self._formats.values()),
+            key=lambda pair: pair[0],
+            default=(0, None),
+        )
+        if best is None or strength == 0:
+            raise UnsupportedFormatError(f"'{path.name}' is not in a supported format.")
+        return best

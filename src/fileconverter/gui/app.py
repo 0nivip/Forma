@@ -12,6 +12,7 @@ from fileconverter import __version__
 from fileconverter.app import build_registry
 from fileconverter.gui.main_window import MainWindow
 from fileconverter.infrastructure import paths
+from fileconverter.infrastructure.ffmpeg import find_ffmpeg
 from fileconverter.infrastructure.logging_setup import install_excepthook, setup_file_logging
 from fileconverter.infrastructure.settings import SETTINGS_FILE_NAME, SettingsStore
 
@@ -34,7 +35,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("FileConverter")
     settings_store = SettingsStore(paths.settings_dir() / SETTINGS_FILE_NAME)
-    window = MainWindow(build_registry(), settings_store)
+    window = MainWindow(build_registry(find_ffmpeg()), settings_store)
     window.show()
     exit_code = app.exec()
 
