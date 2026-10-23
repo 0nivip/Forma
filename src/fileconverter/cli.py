@@ -4,6 +4,10 @@ This is a debugging aid, not the product UI. Examples:
 
     python -m fileconverter formats
     python -m fileconverter convert a.png b.tif --to jpeg --quality 80 --out-dir out
+    python -m fileconverter convert report.pdf --to png --pages 1-3 --dpi 300
+    python -m fileconverter convert book.xlsx --to csv --sheet 2 --delimiter comma
+    python -m fileconverter convert photo.jpg --to png --preserve-metadata
+    python -m fileconverter convert 1.jpg 2.png 3.jpg --to pdf --combine
 """
 
 import argparse
@@ -12,6 +16,7 @@ import sys
 from pathlib import Path
 
 from fileconverter.app import build_registry
+from fileconverter.conversion.backends.spreadsheets import DELIMITER_OPTION, FORMULAS_OPTION
 from fileconverter.conversion.runner import run_job
 from fileconverter.core.models import ConversionRequest, JobStatus
 from fileconverter.core.registry import FormatRegistry
@@ -44,28 +49,83 @@ def _build_parser() -> argparse.ArgumentParser:
         "--out-dir", type=Path, help="output folder (default: next to each source file)"
     )
     convert.add_argument("--quality", type=int, help="quality for lossy formats (JPEG, WebP)")
+    convert.add_argument("--pages", help="PDF to images: page range, e.g. 1-3,5 (default: all)")
+    convert.add_argument("--dpi", type=int, help="PDF to images: resolution (default: 150)")
+    convert.add_argument(
+        "--sheet", help="XLSX to CSV: worksheet number or name (default: all worksheets)"
+    )
+    convert.add_argument(
+        "--delimiter",
+        choices=[value for value, _ in DELIMITER_OPTION.choices],
+        help=f"XLSX to CSV: field delimiter (default: {DELIMITER_OPTION.default})",
+    )
+    convert.add_argument(
+        "--formulas",
+        choices=[value for value, _ in FORMULAS_OPTION.choices],
+        help=(
+            "XLSX to CSV: 'protect' prefixes text starting with = + - @ with ' so spreadsheet "
+            f"programs do not run it; 'raw' keeps values unchanged "
+            f"(default: {FORMULAS_OPTION.default})"
+        ),
+    )
+    convert.add_argument(
+        "--combine",
+        action="store_true",
+        help="combine all given images, in order, into one PDF (with --to pdf)",
+    )
+    convert.add_argument(
+        "--preserve-metadata",
+        action="store_true",
+        help="keep metadata such as EXIF/GPS or media tags (may include personal information)",
+    )
     return parser
 
 
 def _list_formats(registry: FormatRegistry) -> int:
     for fmt in registry.formats():
-        targets = ", ".join(target.id for target in registry.targets_for(fmt.id)) or "-"
+        if not fmt.can_be_source:
+            targets = "(output only)"
+        else:
+            targets = ", ".join(target.id for target in registry.targets_for(fmt.id)) or "-"
         print(f"{fmt.id:6} ({', '.join(fmt.extensions)}) -> {targets}")
         if reason := registry.unavailable_reason(fmt.id):
             print(f"       note: {reason}")
     return 0
 
 
+def _options(args: argparse.Namespace) -> dict[str, object]:
+    """Only options given on the command line; the route supplies defaults for the rest."""
+    given = {
+        "quality": args.quality,
+        "pages": args.pages,
+        "dpi": args.dpi,
+        "sheet": args.sheet,
+        "delimiter": args.delimiter,
+        "formulas": args.formulas,
+    }
+    return {name: value for name, value in given.items() if value is not None}
+
+
 def _convert(registry: FormatRegistry, args: argparse.Namespace) -> int:
-    options = {} if args.quality is None else {"quality": args.quality}
+    options = _options(args)
+    if args.combine:
+        groups = [(args.files[0], tuple(args.files[1:]))]
+    else:
+        groups = [(source, ()) for source in args.files]
+
     failures = 0
-    for source in args.files:
+    for source, extra in groups:
         output_dir = args.out_dir if args.out_dir is not None else source.parent
-        request = ConversionRequest(source, args.target, output_dir, options)
+        request = ConversionRequest(
+            source, args.target, output_dir, options, extra, args.preserve_metadata
+        )
         result = run_job(request, registry)
 
         if result.status is JobStatus.SUCCEEDED:
-            print(f"OK      {source} -> {result.output_path}")
+            outputs = result.output_paths
+            print(f"OK      {source} -> {outputs[0]}")
+            for path in outputs[1:]:
+                print(f"        {' ' * len(str(source))}    {path}")
         elif result.status is JobStatus.CANCELLED:
             print(f"CANCEL  {source}")
         else:

@@ -87,6 +87,28 @@ def test_failed_save_keeps_previous_file(store, monkeypatch):
     assert [p.name for p in store.path.parent.iterdir()] == ["settings.json"]
 
 
+def test_preserve_metadata_defaults_to_false_and_round_trips(store):
+    assert Settings().preserve_metadata is False
+    store.save(Settings(preserve_metadata=True))
+    assert store.load().preserve_metadata is True
+    assert json.loads(store.path.read_text(encoding="utf-8"))["preserve_metadata"] is True
+
+
+def test_settings_file_from_older_version_without_the_key(store):
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(json.dumps({"version": 1, "output_dir": "D:\\Out"}), encoding="utf-8")
+    assert store.load() == Settings(output_dir="D:\\Out", preserve_metadata=False)
+
+
+@pytest.mark.parametrize("bad", ["true", 1, 0, None, [], {"x": 1}])
+def test_invalid_preserve_metadata_value_falls_back_to_false(store, bad):
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(
+        json.dumps({"preserve_metadata": bad, "preferred_target": "png"}), encoding="utf-8"
+    )
+    assert store.load() == Settings(preferred_target="png", preserve_metadata=False)
+
+
 def test_windows_paths_use_appdata_and_localappdata(tmp_path):
     env = {"APPDATA": str(tmp_path / "Roaming"), "LOCALAPPDATA": str(tmp_path / "Local")}
     assert paths.settings_dir("win32", env) == tmp_path / "Roaming" / "FileConverter"

@@ -13,6 +13,12 @@ dependencies = [
     # Only QtCore/QtGui/QtWidgets are needed; the full "PySide6" metapackage would also
     # pull in WebEngine and other large add-ons.
     "PySide6-Essentials>=6.8",
+    # Documents: pure-Python, permissive licenses. 1.13 includes mammoth's security fixes
+    # (no external file access by default, Windows path traversal, ReDoS).
+    "mammoth>=1.13",
+    "openpyxl>=3.1.5",
+    # PDF rendering and creation (ctypes bindings to the bundled PDFium library).
+    "pypdfium2>=5.0",
 ]
 
 [project.optional-dependencies]

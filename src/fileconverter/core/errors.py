@@ -30,6 +30,14 @@ class OutputError(ConversionError):
     """The output could not be written or verified."""
 
 
+class ConversionTimeout(ConversionError):
+    """The conversion took longer than its time limit and was stopped."""
+
+
+class NoContentError(ConversionError):
+    """The source is valid but contains nothing that the target format could hold."""
+
+
 class MissingDependencyError(ConversionError):
     """A required external tool (e.g. FFmpeg) or one of its components is not available."""
 

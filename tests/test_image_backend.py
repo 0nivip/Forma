@@ -15,8 +15,10 @@ EXTENSIONS = {"png": ".png", "jpeg": ".jpg", "webp": ".webp", "bmp": ".bmp", "ti
 TRANSPARENT = (0, 0, 0, 0)
 
 
-def convert(registry, source, target, out_dir=None, **options):
-    request = ConversionRequest(source, target, out_dir or source.parent, options)
+def convert(registry, source, target, out_dir=None, preserve_metadata=False, **options):
+    request = ConversionRequest(
+        source, target, out_dir or source.parent, options, preserve_metadata=preserve_metadata
+    )
     return run_job(request, registry)
 
 
@@ -235,8 +237,9 @@ def test_cmyk_profile_is_dropped_when_converting_to_rgb(registry, tmp_path):
         tmp_path / "print.jpg", "JPEG", mode="CMYK", color=CYAN_CMYK, icc_profile=FAKE_CMYK_PROFILE
     )
 
-    to_png = convert(registry, source, "png")
-    to_tiff = convert(registry, source, "tiff")
+    # Even with metadata preserved, a CMYK profile must not end up in an RGB image.
+    to_png = convert(registry, source, "png", preserve_metadata=True)
+    to_tiff = convert(registry, source, "tiff", preserve_metadata=True)
 
     with Image.open(to_png.output_path) as output:
         assert "icc_profile" not in output.info  # a CMYK profile would be wrong for RGB

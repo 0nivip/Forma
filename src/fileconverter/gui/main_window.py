@@ -4,12 +4,14 @@ import itertools
 import logging
 import os
 from collections.abc import Iterable
+from functools import partial
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QThreadPool, QTimer
+from PySide6.QtCore import QByteArray, QSignalBlocker, QThreadPool, QTimer
 from PySide6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -26,7 +29,15 @@ from PySide6.QtWidgets import (
 
 from fileconverter.core.errors import ConversionError
 from fileconverter.core.formats import Format, FormatFamily
-from fileconverter.core.models import ConversionRequest, ConversionResult, JobStatus
+from fileconverter.core.models import (
+    ChoiceOption,
+    ConversionRequest,
+    ConversionResult,
+    IntOption,
+    JobStatus,
+    OptionValue,
+    Route,
+)
 from fileconverter.core.registry import FormatRegistry
 from fileconverter.gui.job_model import Column, JobTableModel
 from fileconverter.gui.worker import ConversionWorker
@@ -89,14 +100,20 @@ class MainWindow(QMainWindow):
         self.add_button = QPushButton(self.tr("Add Files…"))
         self.remove_button = QPushButton(self.tr("Remove Selected"))
         self.cancel_button = QPushButton(self.tr("Cancel Selected"))
+        self.combine_button = QPushButton(self.tr("Combine into One PDF"))
+        self.combine_button.setToolTip(
+            self.tr("Merge the selected images, in list order, into a single PDF file.")
+        )
         self.add_button.clicked.connect(self._choose_files)
         self.remove_button.clicked.connect(self._remove_selected)
         self.cancel_button.clicked.connect(self.cancel_selected)
+        self.combine_button.clicked.connect(self.combine_selected_into_pdf)
 
         top_row = QHBoxLayout()
         top_row.addWidget(self.add_button)
         top_row.addWidget(self.remove_button)
         top_row.addWidget(self.cancel_button)
+        top_row.addWidget(self.combine_button)
         top_row.addStretch()
         top_row.addWidget(QLabel(self.tr("Tip: you can also drop files onto this window.")))
 
@@ -132,6 +149,33 @@ class MainWindow(QMainWindow):
         options_row.addWidget(self.output_edit, stretch=1)
         options_row.addWidget(self.browse_button)
 
+        # Options of the chosen conversion (pages, resolution, worksheet, quality, ...),
+        # rebuilt from Route.options whenever the selection or target changes.
+        self.route_options = QWidget()
+        self._route_options_layout = QHBoxLayout(self.route_options)
+        self._route_options_layout.setContentsMargins(0, 0, 0, 0)
+        self.option_widgets: dict[str, QSpinBox | QLineEdit | QComboBox] = {}
+        self.route_note = QLabel()
+        self.route_note.setWordWrap(True)
+
+        # The one application-wide privacy setting; read at Convert time, so changing it
+        # applies to the next conversions without a restart.
+        self.preserve_metadata_box = QCheckBox(
+            self.tr("Preserve metadata (may include personal information)")
+        )
+        metadata_help = self.tr(
+            "When disabled, Forma attempts to remove transferable metadata during "
+            "conversion. Some format-specific information may remain."
+        )
+        self.preserve_metadata_box.setToolTip(metadata_help)
+        self.preserve_metadata_box.toggled.connect(self._save_settings)
+        self.metadata_help = QLabel(metadata_help)
+        self.metadata_help.setWordWrap(True)
+        self.metadata_help.setEnabled(False)  # rendered as secondary, greyed-out text
+        metadata_row = QHBoxLayout()
+        metadata_row.addWidget(self.preserve_metadata_box)
+        metadata_row.addWidget(self.metadata_help, stretch=1)
+
         self.convert_button = QPushButton(self.tr("Convert"))
         self.convert_button.setDefault(True)
         self.convert_button.clicked.connect(self.start_conversion)
@@ -143,6 +187,9 @@ class MainWindow(QMainWindow):
         layout.addLayout(top_row)
         layout.addWidget(self.table, stretch=1)
         layout.addLayout(options_row)
+        layout.addWidget(self.route_options)
+        layout.addWidget(self.route_note)
+        layout.addLayout(metadata_row)
         layout.addLayout(bottom_row)
         central = QWidget()
         central.setLayout(layout)
@@ -186,14 +233,14 @@ class MainWindow(QMainWindow):
             ).format(source_format.display_name)
             return Job(job_id, path, state=JobState.UNSUPPORTED, problem=problem)
         target = next((t for t in targets if t.id == self._preferred_target), targets[0])
-        return Job(job_id, path, targets, target)
+        return Job(job_id, path, targets, target, source_format=source_format)
 
     def _choose_files(self) -> None:
         def patterns(family: FormatFamily | None) -> str:
             return " ".join(
                 f"*{extension}"
                 for fmt in self._registry.formats()
-                if family is None or fmt.family is family
+                if fmt.can_be_source and (family is None or fmt.family is family)
                 for extension in fmt.extensions
             )
 
@@ -203,6 +250,7 @@ class MainWindow(QMainWindow):
                 self.tr("Images ({0})").format(patterns(FormatFamily.IMAGE)),
                 self.tr("Video ({0})").format(patterns(FormatFamily.VIDEO)),
                 self.tr("Audio ({0})").format(patterns(FormatFamily.AUDIO)),
+                self.tr("Documents ({0})").format(patterns(FormatFamily.DOCUMENT)),
                 self.tr("All files (*)"),
             ]
         )
@@ -252,12 +300,107 @@ class MainWindow(QMainWindow):
         index = self.target_combo.findData(current.pop()) if len(current) == 1 else -1
         self.target_combo.setCurrentIndex(index)  # -1 shows the "Choose…" placeholder
         self.target_combo.setEnabled(bool(choices) and not self._shutting_down)
+        self._refresh_route_options()
 
     def _apply_target(self, index: int) -> None:
         target = self._registry.get_format(self.target_combo.itemData(index))
         for row in self._rows_for_target_choice():
             self._model.update_job(self._model.job_at(row).id, target=target)
         self._preferred_target = target.id
+        self._refresh_route_options()
+
+    # --- conversion options -------------------------------------------------
+
+    def _route_of(self, job: Job) -> Route | None:
+        if job.source_format is None or job.target is None:
+            return None
+        try:
+            return self._registry.find_route(job.source_format.id, job.target.id)[0]
+        except ConversionError:
+            return None
+
+    def _refresh_route_options(self) -> None:
+        """Show option fields only when every affected file uses the same conversion."""
+        while self._route_options_layout.count():
+            widget = self._route_options_layout.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.option_widgets = {}
+
+        jobs = [self._model.job_at(row) for row in self._rows_for_target_choice()]
+        routes = {self._route_of(job) for job in jobs}
+        route = routes.pop() if len(routes) == 1 else None
+        self.route_note.setText(" ".join(route.notes) if route else "")
+        self.route_note.setHidden(not (route and route.notes))
+        self.route_options.setHidden(not (route and route.options))
+        if not (route and route.options):
+            return
+
+        values = jobs[0].options
+        for option in route.options:
+            if isinstance(option, IntOption):
+                widget = QSpinBox()
+                widget.setRange(option.minimum, option.maximum)
+                widget.setValue(int(values.get(option.name, option.default)))
+                widget.valueChanged.connect(partial(self._set_option, option.name))
+            elif isinstance(option, ChoiceOption):
+                widget = QComboBox()
+                for value, label in option.choices:
+                    widget.addItem(self.tr(label), value)
+                widget.setCurrentIndex(widget.findData(values.get(option.name, option.default)))
+                widget.setToolTip(self.tr(option.help))
+                widget.currentIndexChanged.connect(
+                    lambda index, combo=widget, name=option.name: self._set_option(
+                        name, combo.itemData(index)
+                    )
+                )
+            else:
+                widget = QLineEdit(str(values.get(option.name, option.default)))
+                widget.setPlaceholderText(option.placeholder)
+                widget.setMaxLength(option.max_length)
+                widget.textChanged.connect(partial(self._set_option, option.name))
+            self._route_options_layout.addWidget(QLabel(self.tr("{0}:").format(option.label)))
+            self._route_options_layout.addWidget(widget)
+            self.option_widgets[option.name] = widget
+        self._route_options_layout.addStretch()
+
+    def _set_option(self, name: str, value: OptionValue) -> None:
+        for row in self._rows_for_target_choice():
+            job = self._model.job_at(row)
+            self._model.update_job(job.id, options={**job.options, name: value})
+
+    # --- combining images ---------------------------------------------------
+
+    def _combinable_rows(self) -> list[int]:
+        """Selected, not yet converted single files that can become PDF pages."""
+        return [
+            row
+            for row in self._selected_rows()
+            if (job := self._model.job_at(row)).state is JobState.READY
+            and not job.extra_sources
+            and any(target.id == "pdf" for target in job.targets)
+        ]
+
+    def combine_selected_into_pdf(self) -> None:
+        """Replace the selected images by one job that turns them into one PDF."""
+        rows = self._combinable_rows()
+        if len(rows) < 2 or self._shutting_down:
+            return
+        jobs = [self._model.job_at(row) for row in rows]
+        pdf = self._registry.get_format("pdf")
+        group = Job(
+            next(self._job_ids),
+            jobs[0].source,
+            [pdf],
+            pdf,
+            source_format=jobs[0].source_format,
+            extra_sources=tuple(job.source for job in jobs[1:]),
+        )
+        self._model.remove_rows(rows)
+        self._model.insert_job(rows[0], group)
+        self.table.selectRow(rows[0])
+        self._refresh_target_choice()
+        self._update_buttons()
 
     # --- output folder ------------------------------------------------------
 
@@ -287,7 +430,14 @@ class MainWindow(QMainWindow):
         # Convert again can never schedule the same job twice.
         ready = [job for job in self._model.jobs() if job.state is JobState.READY and job.target]
         for job in ready:
-            request = ConversionRequest(job.source, job.target.id, output_dir or job.source.parent)
+            request = ConversionRequest(
+                job.source,
+                job.target.id,
+                output_dir or job.source.parent,
+                dict(job.options),
+                job.extra_sources,
+                preserve_metadata=self.preserve_metadata_box.isChecked(),
+            )
             self._model.set_state(job.id, JobState.QUEUED, request=request)
             self._queue.submit(job.id)
         if ready:
@@ -421,6 +571,9 @@ class MainWindow(QMainWindow):
             self._preferred_target = settings.preferred_target
         if settings.window_geometry:
             self.restoreGeometry(QByteArray.fromBase64(settings.window_geometry.encode("ascii")))
+        # No toggled() signal here: it would save while the window is half restored.
+        with QSignalBlocker(self.preserve_metadata_box):
+            self.preserve_metadata_box.setChecked(settings.preserve_metadata)
 
     def _save_settings(self) -> None:
         if self._settings_store is None:
@@ -431,6 +584,7 @@ class MainWindow(QMainWindow):
                 output_dir=self.output_edit.text().strip(),
                 preferred_target=self._preferred_target or "",
                 window_geometry=geometry,
+                preserve_metadata=self.preserve_metadata_box.isChecked(),
             )
         )
 
@@ -457,3 +611,4 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(
             any(job.state in (JobState.QUEUED, JobState.RUNNING) for job in selected)
         )
+        self.combine_button.setEnabled(open_for_changes and len(self._combinable_rows()) >= 2)

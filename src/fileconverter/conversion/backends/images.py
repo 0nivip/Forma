@@ -1,5 +1,6 @@
 """Raster image conversion with Pillow."""
 
+import logging
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from fileconverter.core.converter import JobContext
 from fileconverter.core.errors import InvalidInputError, OutputError
 from fileconverter.core.models import IntOption, Route
+
+logger = logging.getLogger(__name__)
 
 # Our format id -> Pillow's format name.
 PILLOW_FORMATS = {
@@ -44,7 +47,14 @@ WEBP_QUALITY = IntOption("quality", "Quality", default=90, minimum=1, maximum=10
 NOTE_NO_ALPHA = "Transparent areas will be filled with white."
 NOTE_LOSSY = "Lossy format: some image detail is lost."
 NOTE_FIRST_FRAME = "Only the first frame or page of an animated or multi-page image is converted."
-NOTE_NO_METADATA = "Metadata (EXIF, GPS location, camera info) is not copied."
+NOTE_NO_METADATA = (
+    "Metadata (EXIF, GPS location, camera info) is removed unless 'Preserve metadata' is on."
+)
+# Formats whose Pillow writer stores EXIF / XMP passed to save() (verified by tests).
+EXIF_TARGETS = {"jpeg", "png", "webp", "tiff"}
+XMP_TARGETS = {"jpeg", "webp"}  # Pillow's PNG and TIFF writers do not store XMP
+EXIF_ORIENTATION = 0x0112
+EXIF_SUB_IFDS = (0x8769, 0x8825, 0xA005)  # Exif, GPS and Interoperability blocks
 
 
 class ImageConverter:
@@ -62,20 +72,32 @@ class ImageConverter:
         options: Mapping[str, int],
         ctx: JobContext,
     ) -> None:
-        image = _load_first_frame(source, ctx)
+        image = load_first_frame(source, ctx)
         ctx.raise_if_cancelled()
 
         original_mode = image.mode
-        # Remove the profile from image.info: some Pillow writers embed info["icc_profile"]
-        # automatically, which would bypass the color-family check below.
+        # Take metadata out of image.info and clear the rest: some Pillow writers embed
+        # info values (ICC profile, comments, ...) automatically. Only what is passed to
+        # save() explicitly below ends up in the output. EXIF and XMP here no longer
+        # contain an orientation: load_first_frame() already rotated the pixels.
         icc_profile = image.info.pop("icc_profile", None)
-        image = _prepare_for_target(image, route.target, ctx)
+        exif = _clean_exif(image.info.pop("exif", None))
+        xmp = image.info.pop("xmp", None)
+        image.info = {}
+        image = prepare_for_target(image, route.target, ctx)
         if _color_family(image.mode) != _color_family(original_mode):
             icc_profile = None  # a profile for one color space is wrong for another
+        if not ctx.preserve_metadata:
+            icc_profile = exif = xmp = None
         ctx.raise_if_cancelled()
 
         pillow_format = PILLOW_FORMATS[route.target]
-        save_args = _save_args(route.target, options, icc_profile)
+        save_args = _save_args(route.target, options, icc_profile, exif, xmp)
+        if route.target == "tiff" and exif is not None and _has_sub_ifds(exif):
+            # libtiff (used for LZW) cannot write EXIF sub-blocks such as GPS; Pillow's own
+            # TIFF writer can, but only without compression.
+            save_args["compression"] = None
+            ctx.warn("The TIFF file was saved uncompressed so that its EXIF/GPS data is kept.")
         try:
             image.save(destination, format=pillow_format, **save_args)
         except OSError as exc:
@@ -104,7 +126,7 @@ def _notes_for(source: str, target: str) -> tuple[str, ...]:
     return tuple(notes)
 
 
-def _load_first_frame(source: Path, ctx: JobContext) -> Image.Image:
+def load_first_frame(source: Path, ctx: JobContext) -> Image.Image:
     try:
         with Image.open(source) as opened:
             frame_count = getattr(opened, "n_frames", 1)
@@ -150,7 +172,7 @@ def _source_bit_depth(opened: Image.Image, source: Path) -> int:
     return 8
 
 
-def _prepare_for_target(image: Image.Image, target: str, ctx: JobContext) -> Image.Image:
+def prepare_for_target(image: Image.Image, target: str, ctx: JobContext) -> Image.Image:
     """Convert the pixel mode into one the target format can store."""
     if image.mode in ALPHA_MODES and not _supports_alpha(target):
         image, had_transparency = _flatten_on_white(image)
@@ -211,7 +233,37 @@ def _color_family(mode: str) -> str:
     return "rgb"
 
 
-def _save_args(target: str, options: Mapping[str, int], icc_profile: bytes | None) -> dict:
+def _clean_exif(raw: bytes | None) -> bytes | None:
+    """Re-serialize EXIF in the standard form every writer expects, without orientation.
+
+    WebP stores EXIF without the "Exif\\0\\0" header that JPEG needs; re-serializing
+    fixes that. The orientation tag is dropped because the pixels are already upright.
+    """
+    if not raw:
+        return None
+    exif = Image.Exif()
+    try:
+        exif.load(raw)
+    except Exception:  # damaged EXIF must not stop the conversion
+        logger.info("Ignoring unreadable EXIF data", exc_info=True)
+        return None
+    exif.pop(EXIF_ORIENTATION, None)
+    return exif.tobytes() if len(exif) else None
+
+
+def _has_sub_ifds(exif_bytes: bytes) -> bool:
+    exif = Image.Exif()
+    exif.load(exif_bytes)
+    return any(tag in exif for tag in EXIF_SUB_IFDS)
+
+
+def _save_args(
+    target: str,
+    options: Mapping[str, int],
+    icc_profile: bytes | None,
+    exif: bytes | None,
+    xmp: bytes | str | None,
+) -> dict:
     args: dict = {}
     if target in ("jpeg", "webp"):
         args["quality"] = options["quality"]
@@ -219,6 +271,10 @@ def _save_args(target: str, options: Mapping[str, int], icc_profile: bytes | Non
         args["compression"] = "tiff_lzw"  # lossless; uncompressed TIFF is needlessly huge
     if icc_profile and target != "bmp":
         args["icc_profile"] = icc_profile
+    if exif and target in EXIF_TARGETS:
+        args["exif"] = exif
+    if xmp and target in XMP_TARGETS:
+        args["xmp"] = xmp.encode("utf-8") if isinstance(xmp, str) else xmp
     return args
 
 

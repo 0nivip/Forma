@@ -17,7 +17,7 @@ IMAGE_IDS = ["png", "jpeg", "webp", "bmp", "tiff"]
 def test_every_image_format_converts_to_every_other(registry):
     for source in IMAGE_IDS:
         targets = {fmt.id for fmt in registry.targets_for(source)}
-        assert targets == set(IMAGE_IDS) - {source}
+        assert targets == set(IMAGE_IDS) - {source} | {"pdf"}  # every image can become a PDF
 
 
 def test_same_format_conversion_is_not_offered(registry):
@@ -27,7 +27,7 @@ def test_same_format_conversion_is_not_offered(registry):
 
 def test_unknown_target_format_is_rejected(registry):
     with pytest.raises(UnsupportedFormatError):
-        registry.get_format("docx")
+        registry.get_format("no-such-format")
 
 
 def test_detects_format_from_content_not_extension(registry, tmp_path):

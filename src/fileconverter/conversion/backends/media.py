@@ -93,6 +93,11 @@ PROFILES: dict[str, TargetProfile] = {
     "opus": TargetProfile("opus", (), (OPUS,)),
 }
 
+# Without these FFmpeg copies global tags (title, artist, GPS location, creation time),
+# per-stream tags (titles, languages) and chapters (with their titles) to the output.
+# Technical tags FFmpeg writes itself (encoder name, handler names) remain.
+STRIP_METADATA = ("-map_metadata", "-1", "-map_metadata:s", "-1", "-map_chapters", "-1")
+
 # Video must have even width and height for yuv420p; round odd sizes down by one pixel.
 EVEN_SIZE_FILTER = ("-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2")
 
@@ -196,7 +201,7 @@ class MediaConverter:
             raise UnsupportedConversionError(f"'{source.name}' contains no audio track.")
         self._warn_about_dropped_streams(info, wants_video, route.target, ctx)
 
-        args = self.build_args(source, destination, route.target, info)
+        args = self.build_args(source, destination, route.target, info, ctx.preserve_metadata)
         progress = _ProgressTracker(info.duration)
         logger.debug("Running FFmpeg: %s", args)
         try:
@@ -218,7 +223,12 @@ class MediaConverter:
         self._verify_output(destination, wants_video, ctx)
 
     def build_args(
-        self, source: Path, destination: Path, target: str, info: MediaInfo
+        self,
+        source: Path,
+        destination: Path,
+        target: str,
+        info: MediaInfo,
+        preserve_metadata: bool = False,
     ) -> list[str]:
         profile = PROFILES[target]
         video, audio = self._encoders[target]
@@ -235,6 +245,8 @@ class MediaConverter:
             args += ["-map", "0:V:0", *video.args, *EVEN_SIZE_FILTER]
         if info.audio_streams:
             args += ["-map", "0:a:0", *audio.args]
+        if not preserve_metadata:
+            args += STRIP_METADATA
         args += [*profile.extra_args, "-progress", "pipe:1"]
         args += ["-f", profile.muxer, ffmpeg.file_arg(destination)]
         return args

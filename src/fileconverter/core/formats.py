@@ -13,6 +13,7 @@ class FormatFamily(Enum):
     IMAGE = "image"
     AUDIO = "audio"
     VIDEO = "video"  # a container that usually holds video (and often audio)
+    DOCUMENT = "document"
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,14 @@ class Format:
     display_name: str  # human-readable name, e.g. "JPEG"
     family: FormatFamily
     extensions: tuple[str, ...]  # lowercase, with dot; the first one is used for output files
-    signatures: tuple[Signature, ...]  # any one matching signature identifies the format
+    # Any one matching signature identifies the format. Output-only formats have none.
+    signatures: tuple[Signature, ...]
+    # For ZIP-based formats (DOCX, XLSX): an entry the archive must contain.
+    zip_member: str | None = None
+
+    @property
+    def can_be_source(self) -> bool:
+        return bool(self.signatures)
 
     @property
     def preferred_extension(self) -> str:
@@ -212,11 +220,49 @@ OPUS = Format(
     signatures=(((0, b"OggS"), (28, b"OpusHead")),),  # Ogg stream whose first packet is Opus
 )
 
+# --- documents ----------------------------------------------------------------
+
+ZIP = b"PK\x03\x04"
+
+PDF = Format(
+    id="pdf",
+    display_name="PDF",
+    family=FormatFamily.DOCUMENT,
+    extensions=(".pdf",),
+    signatures=(((0, b"%PDF-"),),),
+)
+
+DOCX = Format(
+    id="docx",
+    display_name="DOCX",
+    family=FormatFamily.DOCUMENT,
+    extensions=(".docx",),
+    signatures=(((0, ZIP),),),
+    zip_member="word/document.xml",
+)
+
+XLSX = Format(
+    id="xlsx",
+    display_name="XLSX",
+    family=FormatFamily.DOCUMENT,
+    extensions=(".xlsx",),
+    signatures=(((0, ZIP),),),
+    zip_member="xl/workbook.xml",
+)
+
+# Output-only formats: they are produced, never detected as sources.
+TXT = Format("txt", "TXT", FormatFamily.DOCUMENT, (".txt",), ())
+HTML = Format("html", "HTML", FormatFamily.DOCUMENT, (".html", ".htm"), ())
+CSV = Format("csv", "CSV", FormatFamily.DOCUMENT, (".csv",), ())
+
 IMAGE_FORMATS: tuple[Format, ...] = (PNG, JPEG, WEBP, BMP, TIFF)
 VIDEO_FORMATS: tuple[Format, ...] = (MP4, MKV, WEBM, MOV, AVI)
 AUDIO_FORMATS: tuple[Format, ...] = (MP3, WAV, FLAC, AAC, M4A, OGG, OPUS)
+DOCUMENT_FORMATS: tuple[Format, ...] = (PDF, DOCX, XLSX, TXT, HTML, CSV)
 # Order is the display order in the UI; detection does not depend on it.
-BUILTIN_FORMATS: tuple[Format, ...] = IMAGE_FORMATS + VIDEO_FORMATS + AUDIO_FORMATS
+BUILTIN_FORMATS: tuple[Format, ...] = (
+    IMAGE_FORMATS + VIDEO_FORMATS + AUDIO_FORMATS + DOCUMENT_FORMATS
+)
 
 # Enough bytes to check every signature above (Opus needs offset 28 + 8,
 # the Matroska DocType is usually within the first 40 bytes).

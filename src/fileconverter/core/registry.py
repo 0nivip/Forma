@@ -1,5 +1,6 @@
 """Central catalogue of formats and of which converter handles each conversion."""
 
+import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -88,11 +89,23 @@ class FormatRegistry:
 
         if not header:
             raise InvalidInputError(f"'{path.name}' is empty.")
-        strength, best = max(
+        candidates = sorted(
             ((fmt.match_strength(header), fmt) for fmt in self._formats.values()),
             key=lambda pair: pair[0],
-            default=(0, None),
+            reverse=True,  # stable: equally strong matches keep registration order
         )
-        if best is None or strength == 0:
-            raise UnsupportedFormatError(f"'{path.name}' is not in a supported format.")
-        return best
+        for strength, fmt in candidates:
+            if strength == 0:
+                break
+            if fmt.zip_member is None or _zip_contains(path, fmt.zip_member):
+                return fmt
+        raise UnsupportedFormatError(f"'{path.name}' is not in a supported format.")
+
+
+def _zip_contains(path: Path, member: str) -> bool:
+    """Whether a ZIP archive lists `member`. Reads only the archive's directory."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return member in archive.namelist()
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return False

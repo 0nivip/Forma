@@ -1,34 +1,39 @@
 """Runs a single conversion job safely, whatever backend performs it.
 
 Steps:
-  1. Validate the source file and output directory.
+  1. Validate the source file(s) and output directory.
   2. Detect the real source format and find a converter for the requested target.
-  3. Let the converter write into a temporary file inside the output directory.
-  4. Verify the temporary file, then rename it to a free name (never overwriting).
-  5. On any failure or cancellation, delete the temporary file.
+  3. Let the converter write into a temporary file (or, for routes producing several
+     files, a temporary folder) inside the output directory.
+  4. Verify the result, then rename it to a free name (never overwriting).
+  5. On any failure or cancellation, delete the temporary file or folder.
 
-Success is reported only after step 4 has completed.
+Success is reported only after step 4 has completed for every output file. If
+committing a multi-file result fails half-way, the files already committed by this
+job are removed again, so an incomplete set is never presented as a success.
 
-Temporary files: the runner deletes only the exact path that mkstemp() created for
-the current job. It never deletes files by name pattern, so a user's file that merely
-looks like ours (".fileconverter-*.part") is never touched.
+Temporary files: the runner deletes only the exact paths that mkstemp()/mkdtemp()
+created for the current job. It never deletes files by name pattern, so a user's
+file that merely looks like ours (".fileconverter-*.part") is never touched.
 """
 
 import logging
 import os
+import shutil
 import tempfile
 import threading
 from pathlib import Path
 
-from fileconverter.core.converter import JobContext, ProgressCallback
+from fileconverter.core.converter import Converter, JobContext, OutputPart, ProgressCallback
 from fileconverter.core.errors import (
     ConversionCancelled,
     ConversionError,
     InvalidInputError,
     OutputError,
+    UnsupportedConversionError,
 )
 from fileconverter.core.formats import Format
-from fileconverter.core.models import ConversionRequest, ConversionResult, JobStatus
+from fileconverter.core.models import ConversionRequest, ConversionResult, JobStatus, Route
 from fileconverter.core.output_paths import choose_output_path
 from fileconverter.core.registry import FormatRegistry
 
@@ -36,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 TEMP_PREFIX = ".fileconverter-"
 TEMP_SUFFIX = ".part"
+TEMP_DIR_SUFFIX = ".partdir"
 # How often to pick a new name if someone grabs ours right before the rename. Parallel
 # jobs writing files with the same name into one folder can each cause one retry.
 MAX_MOVE_ATTEMPTS = 100
@@ -48,10 +54,11 @@ def run_job(
     on_progress: ProgressCallback | None = None,
 ) -> ConversionResult:
     """Execute one conversion. Never raises for conversion problems; returns a result instead."""
-    ctx = JobContext(cancel_event, on_progress)
+    ctx = JobContext(cancel_event, on_progress, request.preserve_metadata)
     temp_path: Path | None = None
     try:
-        _check_source(request.source)
+        for source in request.sources:
+            _check_source(source)
         _check_output_dir(request.output_dir)
 
         source_format = registry.detect_format(request.source)
@@ -59,22 +66,37 @@ def run_job(
         target_format = registry.get_format(request.target_format)
         route, converter = registry.find_route(source_format.id, target_format.id)
         options = route.resolve_options(request.options)
+        if request.extra_sources:
+            _check_extra_sources(request, route, converter, registry, ctx)
 
         ctx.raise_if_cancelled()
         ctx.report_progress(None)
-        temp_path = _create_temp_file(request.output_dir)
-        converter.convert(request.source, temp_path, route, options, ctx)
-        ctx.raise_if_cancelled()
-
-        _check_output_written(temp_path)
-        output_path = _move_into_place(
-            temp_path, request.source, request.output_dir, target_format.preferred_extension
-        )
-        temp_path = None  # now owned by the user; must not be deleted
+        extension = target_format.preferred_extension
+        if route.multi_output:
+            temp_path = _create_temp_dir(request.output_dir)
+            parts = converter.convert(request.source, temp_path, route, options, ctx)
+            ctx.raise_if_cancelled()
+            _check_parts_written(parts, temp_path)
+            output_paths = _commit_parts(parts, request, extension)
+        else:
+            temp_path = _create_temp_file(request.output_dir)
+            if request.extra_sources:
+                converter.convert_group(request.sources, temp_path, route, options, ctx)
+            else:
+                converter.convert(request.source, temp_path, route, options, ctx)
+            ctx.raise_if_cancelled()
+            _check_output_written(temp_path)
+            output_paths = [
+                _move_into_place(temp_path, request.source.stem, request.output_dir, extension)
+            ]
+            temp_path = None  # now owned by the user; must not be deleted
         ctx.report_progress(1.0)
-        logger.info("Converted '%s' -> '%s'", request.source, output_path)
+        logger.info("Converted '%s' -> %s", request.source, [str(p) for p in output_paths])
         return ConversionResult(
-            request, JobStatus.SUCCEEDED, output_path=output_path, warnings=tuple(ctx.warnings)
+            request,
+            JobStatus.SUCCEEDED,
+            output_paths=tuple(output_paths),
+            warnings=tuple(ctx.warnings),
         )
 
     except ConversionCancelled:
@@ -103,7 +125,7 @@ def run_job(
         )
     finally:
         if temp_path is not None:
-            _remove_temp_file(temp_path)
+            _remove_temp_path(temp_path)
 
 
 def _check_source(source: Path) -> None:
@@ -116,6 +138,28 @@ def _check_source(source: Path) -> None:
 def _check_output_dir(output_dir: Path) -> None:
     if not output_dir.is_dir():
         raise OutputError(f"Output folder '{output_dir}' does not exist.")
+
+
+def _check_extra_sources(
+    request: ConversionRequest,
+    route: Route,
+    converter: Converter,
+    registry: FormatRegistry,
+    ctx: JobContext,
+) -> None:
+    """Every combined source must be convertible by the same multi-input converter."""
+    if not route.multi_input:
+        raise UnsupportedConversionError(
+            f"Several files cannot be combined into one {request.target_format.upper()} file."
+        )
+    for extra in request.extra_sources:
+        detected = registry.detect_format(extra)
+        _warn_on_extension_mismatch(extra, detected, ctx)
+        _, extra_converter = registry.find_route(detected.id, request.target_format)
+        if extra_converter is not converter:
+            raise UnsupportedConversionError(
+                f"'{extra.name}' cannot be combined with '{request.source.name}'."
+            )
 
 
 def _warn_on_extension_mismatch(source: Path, detected: Format, ctx: JobContext) -> None:
@@ -137,14 +181,49 @@ def _create_temp_file(output_dir: Path) -> Path:
     return Path(name)
 
 
+def _create_temp_dir(output_dir: Path) -> Path:
+    try:
+        name = tempfile.mkdtemp(prefix=TEMP_PREFIX, suffix=TEMP_DIR_SUFFIX, dir=output_dir)
+    except OSError as exc:
+        raise OutputError(f"Cannot write to '{output_dir}': {exc.strerror or exc}") from exc
+    return Path(name)
+
+
 def _check_output_written(path: Path) -> None:
     if not path.is_file() or path.stat().st_size == 0:
         raise OutputError("The converter did not produce any output.")
 
 
-def _move_into_place(temp_path: Path, source: Path, output_dir: Path, extension: str) -> Path:
+def _check_parts_written(parts: list[OutputPart] | None, temp_dir: Path) -> None:
+    if not parts:
+        raise OutputError("The converter did not produce any output.")
+    for part in parts:
+        # Parts may legitimately be empty (e.g. the CSV of an empty worksheet).
+        if part.path.parent != temp_dir or not part.path.is_file():
+            raise OutputError(f"Missing output file '{part.path.name}'.")
+
+
+def _commit_parts(
+    parts: list[OutputPart], request: ConversionRequest, extension: str
+) -> list[Path]:
+    """Move every part to a free final name; on failure, undo the parts already moved."""
+    committed: list[Path] = []
+    try:
+        for part in parts:
+            stem = request.source.stem
+            if part.name_suffix:
+                stem = f"{stem}_{part.name_suffix}"
+            committed.append(_move_into_place(part.path, stem, request.output_dir, extension))
+    except BaseException:
+        for path in committed:  # created by this job moments ago, never a user's file
+            _remove_temp_path(path)
+        raise
+    return committed
+
+
+def _move_into_place(temp_path: Path, stem: str, output_dir: Path, extension: str) -> Path:
     for _ in range(MAX_MOVE_ATTEMPTS):
-        destination = choose_output_path(source, output_dir, extension)
+        destination = choose_output_path(stem, output_dir, extension)
         try:
             _rename_no_replace(temp_path, destination)
         except FileExistsError:
@@ -169,12 +248,16 @@ def _link_then_unlink(src: Path, dst: Path) -> None:
     os.link(src, dst)
     # The output is committed at this point. If removing the temp name fails, a
     # leftover temp file is logged, but the conversion itself still succeeded.
-    _remove_temp_file(src)
+    _remove_temp_path(src)
 
 
-def _remove_temp_file(path: Path) -> None:
+def _remove_temp_path(path: Path) -> None:
+    """Delete a temp file, or a temp folder created by this job with its contents."""
     try:
-        path.unlink(missing_ok=True)
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
     except OSError:
         # Not fatal for the job result, but never silent.
-        logger.warning("Could not delete temporary file '%s'", path, exc_info=True)
+        logger.warning("Could not delete temporary path '%s'", path, exc_info=True)

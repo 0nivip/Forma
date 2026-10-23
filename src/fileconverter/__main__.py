@@ -1,7 +1,14 @@
-"""Allows `python -m fileconverter ...`."""
+"""Allows `python -m fileconverter ...`.
 
-import sys
+Guarded because worker processes (multiprocessing "spawn") import the main module again.
+"""
 
-from fileconverter.cli import main
+if __name__ == "__main__":
+    import multiprocessing
+    import sys
 
-sys.exit(main())
+    multiprocessing.freeze_support()
+
+    from fileconverter.cli import main
+
+    sys.exit(main())

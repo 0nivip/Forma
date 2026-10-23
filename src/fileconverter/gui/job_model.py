@@ -8,14 +8,18 @@ from PySide6.QtWidgets import QApplication, QStyle
 
 from fileconverter.core.errors import (
     ConversionError,
+    ConversionTimeout,
     InvalidInputError,
     InvalidOptionError,
     MissingDependencyError,
+    NoContentError,
     OutputError,
     UnsupportedConversionError,
     UnsupportedFormatError,
 )
 from fileconverter.services.jobs import Job, JobState
+
+MAX_TOOLTIP_PATHS = 20
 
 
 class Column(IntEnum):
@@ -77,9 +81,11 @@ class JobTableModel(QAbstractTableModel):
         return self._jobs[row]
 
     def add_job(self, job: Job) -> None:
-        row = len(self._jobs)
+        self.insert_job(len(self._jobs), job)
+
+    def insert_job(self, row: int, job: Job) -> None:
         self.beginInsertRows(QModelIndex(), row, row)
-        self._jobs.append(job)
+        self._jobs.insert(row, job)
         self.endInsertRows()
 
     def remove_rows(self, rows: list[int]) -> None:
@@ -119,6 +125,8 @@ class JobTableModel(QAbstractTableModel):
 
     def _display_text(self, job: Job, column: Column) -> str:
         if column == Column.FILE:
+            if job.extra_sources:
+                return self.tr("{0} + {1} more").format(job.source.name, len(job.extra_sources))
             return job.source.name
         if column == Column.TARGET:
             return job.target.display_name if job.target else "—"
@@ -128,10 +136,14 @@ class JobTableModel(QAbstractTableModel):
 
     def _tooltip(self, job: Job, column: Column) -> str | None:
         if column == Column.FILE:
-            return str(job.source)
+            return "\n".join(str(path) for path in (job.source, *job.extra_sources))
         if column == Column.DETAILS:
-            if job.result and job.result.output_path:
-                return "\n".join([str(job.result.output_path), *job.result.warnings])
+            if job.result and job.result.output_paths:
+                paths = [str(path) for path in job.result.output_paths]
+                if len(paths) > MAX_TOOLTIP_PATHS:
+                    hidden = len(paths) - MAX_TOOLTIP_PATHS
+                    paths = [*paths[:MAX_TOOLTIP_PATHS], self.tr("… and {0} more").format(hidden)]
+                return "\n".join([*paths, *job.result.warnings])
             return self.details_text(job) or None
         return None
 
@@ -161,7 +173,15 @@ class JobTableModel(QAbstractTableModel):
         if job.state is JobState.UNSUPPORTED:
             return job.problem
         if job.state is JobState.SUCCEEDED and result and result.output_path:
-            parts = [self.tr("Saved as {0}").format(result.output_path.name)]
+            outputs = result.output_paths
+            if len(outputs) == 1:
+                parts = [self.tr("Saved as {0}").format(outputs[0].name)]
+            else:
+                parts = [
+                    self.tr("Saved {0} files: {1} … {2}").format(
+                        len(outputs), outputs[0].name, outputs[-1].name
+                    )
+                ]
             if job.cancel_requested:
                 parts.append(self.tr("The file was already saved when cancellation was requested."))
             return " — ".join([*parts, *result.warnings])
@@ -179,6 +199,10 @@ class JobTableModel(QAbstractTableModel):
 
     def _error_hint(self, error: ConversionError) -> str:
         """A short 'what to do next' sentence for each failure category."""
+        if isinstance(error, ConversionTimeout):
+            return self.tr("The file may be very large, very complex or damaged.")
+        if isinstance(error, NoContentError):
+            return self.tr("There is nothing to convert.")
         if isinstance(error, MissingDependencyError):
             return self.tr("Install the missing tool, then restart the application.")
         if isinstance(error, InvalidInputError):

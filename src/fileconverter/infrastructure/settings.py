@@ -24,6 +24,8 @@ class Settings:
     output_dir: str = ""  # "" means: next to each source file
     preferred_target: str = ""  # format id, e.g. "jpeg"; "" means no preference
     window_geometry: str = ""  # opaque base64 string produced by the GUI toolkit
+    # False (default): converters try to remove metadata such as EXIF/GPS or media tags.
+    preserve_metadata: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> "Settings":
@@ -31,9 +33,15 @@ class Settings:
         values = {}
         for spec in fields(cls):
             value = data.get(spec.name)
-            if isinstance(value, str) and len(value) <= MAX_VALUE_LENGTH:
+            if value is None:
+                continue  # missing (e.g. a settings file from an older version): default
+            if isinstance(spec.default, bool):
+                valid = isinstance(value, bool)  # strictly true/false, never 0/1 or "yes"
+            else:
+                valid = isinstance(value, str) and len(value) <= MAX_VALUE_LENGTH
+            if valid:
                 values[spec.name] = value
-            elif value is not None:
+            else:
                 logger.warning("Ignoring invalid setting %r", spec.name)
         return cls(**values)
 

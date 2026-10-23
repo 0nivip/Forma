@@ -11,7 +11,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from fileconverter.core.formats import Format
-from fileconverter.core.models import ConversionRequest, ConversionResult
+from fileconverter.core.models import ConversionRequest, ConversionResult, OptionValue
 
 
 class JobState(Enum):
@@ -62,6 +62,10 @@ class Job:
     result: ConversionResult | None = None
     cancel_requested: bool = False
     problem: str = ""  # why an UNSUPPORTED file cannot be converted
+    source_format: Format | None = None
+    options: dict[str, OptionValue] = field(default_factory=dict)  # only values the user set
+    # Further files combined with `source` into one output (e.g. images into one PDF).
+    extra_sources: tuple[Path, ...] = ()
 
     def transition_to(self, new_state: JobState) -> None:
         if new_state not in ALLOWED_TRANSITIONS[self.state]:
