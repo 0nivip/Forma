@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fileconverter"
+version = "0.1.0"
+description = "Local-first desktop file converter"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "Pillow>=11.0",
+    # Only QtCore/QtGui/QtWidgets are needed; the full "PySide6" metapackage would also
+    # pull in WebEngine and other large add-ons.
+    "PySide6-Essentials>=6.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+fileconverter = "fileconverter.cli:main"
+
+[project.gui-scripts]
+fileconverter-gui = "fileconverter.gui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+qt_api = "pyside6"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # import sorting
+    "B",   # bugbear: likely bugs
+    "UP",  # pyupgrade: modern syntax
+    "SIM", # simplifications
+]

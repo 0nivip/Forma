@@ -1,0 +1,50 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python packaging
+*.egg-info/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+
+# Testing and linting
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# IDE and editor settings
+.vscode/
+.idea/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Application settings and logs
+settings.json
+*.log
+logs/
+
+# Temporary conversion files
+.fileconverter-*.part
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# PyInstaller
+*.spec
