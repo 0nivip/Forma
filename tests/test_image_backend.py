@@ -183,7 +183,7 @@ def test_multipage_tiff_converts_first_page_with_warning(registry, tmp_path):
 
     result = convert(registry, source, "png")
 
-    assert any("2 frames" in w for w in result.warnings)
+    assert any("2 pages" in w for w in result.warnings)
     with Image.open(result.output_path) as output:
         assert output.convert("RGB").getpixel((0, 0)) == (255, 0, 0)
 

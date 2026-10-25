@@ -105,6 +105,34 @@ TIFF = Format(
     ),
 )
 
+AVIF = Format(
+    id="avif",
+    display_name="AVIF",
+    family=FormatFamily.IMAGE,
+    extensions=(".avif",),
+    signatures=(
+        ((4, b"ftyp"), (8, b"avif")),  # still image
+        ((4, b"ftyp"), (8, b"avis")),  # image sequence (animation)
+        ((4, b"ftyp"), (8, b"mif1"), (None, b"avif")),  # generic HEIF brand, AVIF compatible
+    ),
+)
+
+GIF = Format(
+    id="gif",
+    display_name="GIF",
+    family=FormatFamily.IMAGE,
+    extensions=(".gif",),
+    signatures=(((0, b"GIF87a"),), ((0, b"GIF89a"),)),
+)
+
+ICO = Format(
+    id="ico",
+    display_name="ICO",
+    family=FormatFamily.IMAGE,
+    extensions=(".ico",),
+    signatures=(((0, b"\x00\x00\x01\x00"),),),  # reserved=0, type=1 (icon)
+)
+
 # --- video containers ---------------------------------------------------------
 # Signatures only pick a likely container; ffprobe validates the actual streams
 # before anything is converted.
@@ -255,7 +283,7 @@ TXT = Format("txt", "TXT", FormatFamily.DOCUMENT, (".txt",), ())
 HTML = Format("html", "HTML", FormatFamily.DOCUMENT, (".html", ".htm"), ())
 CSV = Format("csv", "CSV", FormatFamily.DOCUMENT, (".csv",), ())
 
-IMAGE_FORMATS: tuple[Format, ...] = (PNG, JPEG, WEBP, BMP, TIFF)
+IMAGE_FORMATS: tuple[Format, ...] = (PNG, JPEG, WEBP, AVIF, GIF, BMP, TIFF, ICO)
 VIDEO_FORMATS: tuple[Format, ...] = (MP4, MKV, WEBM, MOV, AVI)
 AUDIO_FORMATS: tuple[Format, ...] = (MP3, WAV, FLAC, AAC, M4A, OGG, OPUS)
 DOCUMENT_FORMATS: tuple[Format, ...] = (PDF, DOCX, XLSX, TXT, HTML, CSV)

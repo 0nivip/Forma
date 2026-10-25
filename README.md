@@ -10,7 +10,7 @@ no upload, no account and no telemetry.
 
 | Kind | Formats | Engine |
 |---|---|---|
-| Images | PNG, JPEG, WebP, BMP, TIFF | Pillow (bundled Python dependency) |
+| Images | PNG, JPEG, WebP, AVIF, GIF (incl. animated), BMP, TIFF, ICO | Pillow (bundled Python dependency) |
 | Video | MP4, MKV, WebM, MOV, AVI | FFmpeg (installed separately) |
 | Audio | MP3, WAV, FLAC, AAC, M4A, OGG, Opus | FFmpeg (installed separately) |
 | Documents | DOCX → TXT, DOCX → HTML, XLSX → CSV | mammoth, openpyxl (bundled) |
@@ -18,6 +18,36 @@ no upload, no account and no telemetry.
 
 No office suite (LibreOffice, Microsoft Office) is needed or used. DOCX → PDF,
 PPTX → PDF and DOC ↔ DOCX are **not** supported.
+
+### Images
+
+Every image format converts to every other one (and to PDF).
+
+- **AVIF** uses the libavif codecs bundled in Pillow's wheels (dav1d for reading, aom
+  for writing). At startup Forma checks that it can really read and write a tiny AVIF;
+  AVIF routes are offered only for what works, otherwise the GUI and CLI explain what
+  is missing (e.g. "cannot write AVIF … update Pillow"). Files with the `avif`/`avis`
+  brands, or `mif1` listing AVIF as compatible, are recognised; HEIC is not supported.
+- **Animation** (animated GIF, WebP, APNG, AVIF sources): converted to GIF, WebP, PNG
+  (as APNG) or AVIF, every frame is kept with its duration, the loop count and
+  transparency. Loop counts are translated between formats (a GIF "loop" counts
+  repeats, WebP/APNG count total plays). Pillow cannot read the loop count of AVIF
+  files: an animated AVIF source is converted as looping forever, and a finite loop
+  written to AVIF cannot be verified (warnings say so). Converted to JPEG, BMP, TIFF
+  or ICO, only the first frame is kept and the job warns that the animation was lost.
+  Animations above 2000 frames or 64 megapixels in total are refused rather than
+  loaded into memory. Animated WebP with transparency is written with every frame as
+  a key frame, because libwebp otherwise drops the alpha channel (larger files).
+- **GIF** output: at most 256 colours and only on/off transparency (a warning reports
+  semi-transparent pixels).
+- **ICO** output: icons are square, so a non-square image is centred on a transparent
+  square (never stretched); anything above 256 × 256 is scaled down to 256 × 256 (both
+  reported as warnings). The icon contains the standard sizes 16, 24, 32, 48, 64, 128
+  and 256 up to the image size (plus the image's own size). ICO input uses the
+  largest size in the file.
+- **Quality** (GUI field / CLI `--quality`): JPEG 1–95 (default 90), WebP 1–100
+  (default 90), AVIF 1–100 (default 75, Pillow's default). Shown only for those
+  targets; other targets reject the option.
 
 Video files can be converted to other video containers or to any audio format
 (audio extraction). Audio files can be converted to other audio formats.
@@ -57,7 +87,7 @@ verified below are covered by tests, and format-specific information may remain.
 
 | Backend | Off (default) | On |
 |---|---|---|
-| Images (Pillow) | EXIF (incl. GPS), XMP, ICC profile and JPEG comments are not written. Verified for JPEG/PNG/WebP sources → JPEG/PNG/WebP/TIFF/BMP. | EXIF (incl. GPS) and ICC are kept for JPEG/PNG/WebP/TIFF targets; XMP only for JPEG/WebP targets (Pillow limitation). JPEG comments, PNG text chunks and EXIF of TIFF sources are not kept. A TIFF with EXIF sub-blocks (e.g. GPS) is saved uncompressed, because the compressing writer cannot store them (a warning says so). |
+| Images (Pillow) | EXIF (incl. GPS), XMP, ICC profile and JPEG comments are not written. Verified for JPEG/PNG/WebP sources → JPEG/PNG/WebP/TIFF/BMP, and for JPEG → AVIF. | EXIF (incl. GPS) and ICC are kept for JPEG/PNG/WebP/TIFF/AVIF targets; XMP only for JPEG/WebP/AVIF targets (Pillow limitation). GIF, BMP and ICO cannot hold them. Animations never carry metadata (a warning says so when preserving). JPEG comments, PNG text chunks and EXIF of TIFF sources are not kept. A TIFF with EXIF sub-blocks (e.g. GPS) is saved uncompressed, because the compressing writer cannot store them (a warning says so). |
 | Audio/video (FFmpeg) | `-map_metadata -1 -map_metadata:s -1 -map_chapters -1`: global tags (title, artist, location, …), stream tags (titles, languages) and chapters are dropped, including for audio extraction. FFmpeg's own technical tags (encoder name, handler names) remain. | Tags and chapters are copied as FFmpeg does by default. |
 | Images → PDF | JPEGs are embedded without EXIF/XMP/ICC/comment segments and without trailing data such as preview images; other images carry no metadata. No author/title is set on the PDF. | JPEGs are embedded byte for byte (their metadata stays inside the image stream, where PDF readers do not show it); metadata of other images cannot be stored in the PDF (a warning says so). |
 | Documents, PDF → images | Not affected: these routes do not copy source metadata. | Same. |
@@ -251,6 +281,9 @@ all process handling is also covered by tests that do not need FFmpeg.
 ```powershell
 .\.venv\Scripts\python.exe -m fileconverter formats
 .\.venv\Scripts\python.exe -m fileconverter convert photo.png --to jpeg --quality 85 --out-dir out
+.\.venv\Scripts\python.exe -m fileconverter convert photo.jpg --to avif --quality 60
+.\.venv\Scripts\python.exe -m fileconverter convert spinner.gif --to webp          # keeps the animation
+.\.venv\Scripts\python.exe -m fileconverter convert logo.png --to ico
 .\.venv\Scripts\python.exe -m fileconverter convert "my song.wav" --to mp3
 .\.venv\Scripts\python.exe -m fileconverter convert report.docx --to txt
 .\.venv\Scripts\python.exe -m fileconverter convert report.docx --to html --out-dir out

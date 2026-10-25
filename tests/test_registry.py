@@ -11,7 +11,7 @@ from fileconverter.core.models import IntOption, Route
 from fileconverter.core.registry import FormatRegistry
 from helpers import make_image
 
-IMAGE_IDS = ["png", "jpeg", "webp", "bmp", "tiff"]
+IMAGE_IDS = ["png", "jpeg", "webp", "avif", "gif", "bmp", "tiff", "ico"]
 
 
 def test_every_image_format_converts_to_every_other(registry):

@@ -62,12 +62,18 @@ _RANGE_PART = re.compile(r"^(\d+)?\s*(-)?\s*(\d+)?$")
 
 
 class PdfConverter:
+    def __init__(self, image_sources: Sequence[str] | None = None) -> None:
+        # Image formats Pillow can actually read here (AVIF depends on the build).
+        self._image_sources = (
+            list(image_sources) if image_sources is not None else [f.id for f in IMAGE_FORMATS]
+        )
+
     def routes(self) -> Iterator[Route]:
         yield Route("pdf", "png", (DPI_OPTION, PAGES_OPTION), (NOTE_PAGES,), multi_output=True)
         jpeg_options = (DPI_OPTION, PAGES_OPTION, JPEG_QUALITY)
         yield Route("pdf", "jpeg", jpeg_options, (NOTE_PAGES,), multi_output=True)
-        for fmt in IMAGE_FORMATS:
-            yield Route(fmt.id, "pdf", notes=(NOTE_TO_PDF,), multi_input=True)
+        for format_id in self._image_sources:
+            yield Route(format_id, "pdf", notes=(NOTE_TO_PDF,), multi_input=True)
 
     def convert(
         self,

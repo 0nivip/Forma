@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from fileconverter.app import build_registry
+from fileconverter.conversion.backends.images import QUALITY_OPTIONS
 from fileconverter.conversion.backends.spreadsheets import (
     DECIMAL_OPTION,
     DELIMITER_OPTION,
@@ -52,7 +53,11 @@ def _build_parser() -> argparse.ArgumentParser:
     convert.add_argument(
         "--out-dir", type=Path, help="output folder (default: next to each source file)"
     )
-    convert.add_argument("--quality", type=int, help="quality for lossy formats (JPEG, WebP)")
+    quality_help = ", ".join(
+        f"{fmt.upper()} {option.minimum}-{option.maximum} (default {option.default})"
+        for fmt, option in QUALITY_OPTIONS.items()
+    )
+    convert.add_argument("--quality", type=int, help=f"quality for lossy formats: {quality_help}")
     convert.add_argument("--pages", help="PDF to images: page range, e.g. 1-3,5 (default: all)")
     convert.add_argument("--dpi", type=int, help="PDF to images: resolution (default: 150)")
     convert.add_argument(

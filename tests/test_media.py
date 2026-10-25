@@ -101,7 +101,16 @@ def test_audio_sources_offer_audio_targets_only():
 
 def test_image_routes_are_unchanged_by_media_support():
     registry = build_registry(fake_tools())
-    assert {fmt.id for fmt in registry.targets_for("png")} == {"jpeg", "webp", "bmp", "tiff", "pdf"}
+    assert {fmt.id for fmt in registry.targets_for("png")} == {
+        "jpeg",
+        "webp",
+        "avif",
+        "gif",
+        "bmp",
+        "tiff",
+        "ico",
+        "pdf",
+    }
 
 
 def test_lgpl_like_build_uses_fallbacks_and_hides_impossible_targets():

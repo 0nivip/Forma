@@ -67,7 +67,7 @@ def test_added_file_offers_only_supported_targets(window, tmp_path):
 
     assert states(window) == [JobState.READY]
     assert cell(window, 0, Column.STATUS) == "Ready"
-    assert set(combo_ids(window)) == {"jpeg", "webp", "bmp", "tiff", "pdf"}
+    assert set(combo_ids(window)) == {"jpeg", "webp", "avif", "gif", "bmp", "tiff", "ico", "pdf"}
     assert window.convert_button.isEnabled()
 
 
@@ -75,12 +75,12 @@ def test_target_choices_follow_selection(window, tmp_path):
     window.add_files([make_image(tmp_path / "a.png"), make_image(tmp_path / "b.jpg", "JPEG")])
 
     # Nothing selected: only targets valid for every file.
-    assert set(combo_ids(window)) == {"webp", "bmp", "tiff", "pdf"}
+    assert set(combo_ids(window)) == {"webp", "avif", "gif", "bmp", "tiff", "ico", "pdf"}
 
     window.table.selectRow(0)  # the PNG
-    assert set(combo_ids(window)) == {"jpeg", "webp", "bmp", "tiff", "pdf"}
+    assert set(combo_ids(window)) == {"jpeg", "webp", "avif", "gif", "bmp", "tiff", "ico", "pdf"}
     window.table.selectRow(1)  # the JPEG
-    assert set(combo_ids(window)) == {"png", "webp", "bmp", "tiff", "pdf"}
+    assert set(combo_ids(window)) == {"png", "webp", "avif", "gif", "bmp", "tiff", "ico", "pdf"}
 
 
 def test_choosing_target_updates_selected_row_only(window, tmp_path):
