@@ -66,6 +66,12 @@ class Job:
     options: dict[str, OptionValue] = field(default_factory=dict)  # only values the user set
     # Further files combined with `source` into one output (e.g. images into one PDF).
     extra_sources: tuple[Path, ...] = ()
+    attempt: int = 1  # 2, 3, ... for retries of a failed job
+    retried: bool = False  # a newer attempt of this failed job exists; it cannot be retried again
+
+    @property
+    def can_retry(self) -> bool:
+        return self.state is JobState.FAILED and not self.retried and self.request is not None
 
     def transition_to(self, new_state: JobState) -> None:
         if new_state not in ALLOWED_TRANSITIONS[self.state]:

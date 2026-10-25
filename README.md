@@ -48,6 +48,47 @@ Every image format converts to every other one (and to PDF).
 - **Quality** (GUI field / CLI `--quality`): JPEG 1–95 (default 90), WebP 1–100
   (default 90), AVIF 1–100 (default 75, Pillow's default). Shown only for those
   targets; other targets reject the option.
+- **Presets** (GUI *Preset* / CLI `--preset`) for the same targets (and PDF → JPEG)
+  set the encoder quality to fixed, per-codec values. The numbers differ because the
+  codecs' scales are not comparable:
+
+  | Preset | JPEG | WebP | AVIF |
+  |---|---|---|---|
+  | High quality (`high`) | 92 | 90 | 85 |
+  | Balanced (`balanced`) | 82 | 80 | 65 |
+  | Smaller file (`small`) | 65 | 60 | 45 |
+
+  The default preset is **Custom** (`custom`): the Quality value decides, exactly as
+  before presets existed. In the GUI, choosing a preset fills in Quality; changing
+  Quality yourself switches the preset back to Custom. In the CLI, a preset together
+  with a different `--quality` is rejected as contradictory. Lossless and palette
+  formats (PNG, GIF, BMP, TIFF, ICO) have no preset or quality.
+
+## Batches, retrying and output names
+
+- Any number of files can be added at once or later, by *Add Files…* or drag and
+  drop. A file that is still waiting, queued or being converted is not added twice
+  (the status bar says how many were skipped); a finished file can be added again.
+- Every job keeps its own status, progress, output file(s) and error message. A failed
+  job does not stop the others. Jobs that have not started yet can be removed with
+  *Remove Selected*; running jobs are stopped with *Cancel Selected*.
+- **Retry Failed** runs the selected failed jobs again (all failed jobs if nothing is
+  selected) as new attempts listed under the original, e.g. "photo.png (attempt 2)".
+  The retry uses the original input, target, options, output folder and metadata
+  choice — not what the window shows now. Before retrying, Forma checks that the file
+  still exists, is still a supported format, and that the output folder exists;
+  otherwise it explains why and starts nothing. The earlier attempt stays in the list
+  as "Failed (retried)" and cannot be retried again, so the same job never runs
+  twice. Successful and cancelled jobs are never rerun.
+- **Output names** are chosen when jobs are queued, in list order: the first job
+  gets `photo.jpg`; if that file exists, or another job of the batch (or one already
+  queued) wants the same name, the next free one is used (`photo (1).jpg`,
+  `photo (2).jpg`, … — case-insensitive, as Windows compares names). The result does
+  not depend on which job happens to finish first. Multi-file outputs reserve their
+  base name the same way (`doc_page_001.png`, or `doc (1)_page_001.png`), and every
+  single file is again checked for collisions when it is saved. Existing files and
+  the source file are never overwritten; a retry therefore never replaces an earlier
+  result.
 
 Video files can be converted to other video containers or to any audio format
 (audio extraction). Audio files can be converted to other audio formats.

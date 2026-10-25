@@ -23,7 +23,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError, features
 
 from fileconverter.core.converter import JobContext
 from fileconverter.core.errors import InvalidInputError, OutputError
-from fileconverter.core.models import IntOption, Route
+from fileconverter.core.models import ChoiceOption, IntOption, Route
 from fileconverter.core.registry import FormatRegistry
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,39 @@ WEBP_QUALITY = IntOption("quality", "Quality", default=90, minimum=1, maximum=10
 # Pillow's AVIF default; AVIF looks good at lower numbers than JPEG.
 AVIF_QUALITY = IntOption("quality", "Quality", default=75, minimum=1, maximum=100)
 QUALITY_OPTIONS = {"jpeg": JPEG_QUALITY, "webp": WEBP_QUALITY, "avif": AVIF_QUALITY}
+
+# Quality presets: explicit encoder quality values per codec. The numbers differ
+# because the codecs' quality scales are not comparable (AVIF 65 ~ JPEG 82 visually).
+PRESET_QUALITY = {
+    "jpeg": {"high": 92, "balanced": 82, "small": 65},
+    "webp": {"high": 90, "balanced": 80, "small": 60},
+    "avif": {"high": 85, "balanced": 65, "small": 45},
+}
+PRESET_LABELS = (
+    ("custom", "Custom (use Quality)"),
+    ("high", "High quality"),
+    ("balanced", "Balanced"),
+    ("small", "Smaller file"),
+)
+
+
+def _preset_option(codec: str) -> ChoiceOption:
+    values = PRESET_QUALITY[codec]
+    return ChoiceOption(
+        "preset",
+        "Preset",
+        PRESET_LABELS,
+        default="custom",  # keeps the previous behaviour: the Quality value decides
+        help=(
+            f"{codec.upper()} quality: High {values['high']}, Balanced {values['balanced']}, "
+            f"Smaller file {values['small']}. Choosing a preset sets Quality; changing "
+            "Quality yourself switches back to Custom."
+        ),
+        implies=tuple((name, (("quality", quality),)) for name, quality in values.items()),
+    )
+
+
+PRESET_OPTIONS = {codec: _preset_option(codec) for codec in PRESET_QUALITY}
 
 NOTE_NO_ALPHA = "Transparent areas will be filled with white."
 NOTE_LOSSY = "Lossy format: some image detail is lost."
@@ -279,8 +312,11 @@ def register_images(registry: FormatRegistry) -> ImageConverter:
     return converter
 
 
-def _options_for(target: str) -> tuple[IntOption, ...]:
-    return (QUALITY_OPTIONS[target],) if target in QUALITY_OPTIONS else ()
+def _options_for(target: str) -> tuple[ChoiceOption | IntOption, ...]:
+    # Lossless or palette formats (PNG, GIF, BMP, TIFF, ICO) get neither option.
+    if target not in QUALITY_OPTIONS:
+        return ()
+    return (PRESET_OPTIONS[target], QUALITY_OPTIONS[target])
 
 
 def _notes_for(source: str, target: str) -> tuple[str, ...]:

@@ -1,5 +1,6 @@
 """The application's main window: file list, target format, output folder, Convert."""
 
+import dataclasses
 import itertools
 import logging
 import os
@@ -38,6 +39,7 @@ from fileconverter.core.models import (
     OptionValue,
     Route,
 )
+from fileconverter.core.output_paths import PlannedOutput, plan_output_stems
 from fileconverter.core.registry import FormatRegistry
 from fileconverter.gui.job_model import Column, JobTableModel
 from fileconverter.gui.worker import ConversionWorker
@@ -78,6 +80,7 @@ class MainWindow(QMainWindow):
         self._workers: dict[int, ConversionWorker] = {}
         self._job_ids = itertools.count(1)
         self._preferred_target: str | None = None  # last target the user picked
+        self._applying_preset = False  # see _apply_preset
 
         self._shutting_down = False
         self._close_allowed = False
@@ -108,11 +111,21 @@ class MainWindow(QMainWindow):
         self.remove_button.clicked.connect(self._remove_selected)
         self.cancel_button.clicked.connect(self.cancel_selected)
         self.combine_button.clicked.connect(self.combine_selected_into_pdf)
+        self.retry_button = QPushButton(self.tr("Retry Failed"))
+        self.retry_button.setToolTip(
+            self.tr(
+                "Run the selected failed jobs again (all failed jobs if none is selected), "
+                "with the same settings and output folder. Successful and cancelled jobs "
+                "are not rerun."
+            )
+        )
+        self.retry_button.clicked.connect(self.retry_failed)
 
         top_row = QHBoxLayout()
         top_row.addWidget(self.add_button)
         top_row.addWidget(self.remove_button)
         top_row.addWidget(self.cancel_button)
+        top_row.addWidget(self.retry_button)
         top_row.addWidget(self.combine_button)
         top_row.addStretch()
         top_row.addWidget(QLabel(self.tr("Tip: you can also drop files onto this window.")))
@@ -204,12 +217,25 @@ class MainWindow(QMainWindow):
     def add_files(self, paths: Iterable[Path]) -> None:
         if self._shutting_down:
             return
-        waiting = {job.source for job in self._model.jobs() if job.state is JobState.READY}
+        # A file that is still waiting, queued or being converted is not added twice;
+        # finished files may be added again to convert them once more.
+        pending = {
+            path
+            for job in self._model.jobs()
+            if job.state is JobState.READY or job.state in ACTIVE_STATES
+            for path in (job.source, *job.extra_sources)
+        }
+        skipped = 0
         for path in paths:
-            if path in waiting:
-                continue  # already in the list and not converted yet
+            if path in pending:
+                skipped += 1
+                continue
             self._model.add_job(self._make_job(path))
-            waiting.add(path)
+            pending.add(path)
+        if skipped:
+            self.statusBar().showMessage(
+                self.tr("{0} file(s) already in the list were not added again.").format(skipped)
+            )
         self._refresh_target_choice()
         self._update_buttons()
 
@@ -258,11 +284,16 @@ class MainWindow(QMainWindow):
         self.add_files(Path(name) for name in names)
 
     def _remove_selected(self) -> None:
-        rows = [
-            row
-            for row in self._selected_rows()
-            if self._model.job_at(row).state not in ACTIVE_STATES
-        ]
+        rows = []
+        for row in self._selected_rows():
+            job = self._model.job_at(row)
+            if job.state is JobState.QUEUED:
+                # Not started yet: take it out of the queue so that it never runs.
+                if self._queue.cancel(job.id) is not CancelOutcome.REMOVED:
+                    continue
+            elif job.state in ACTIVE_STATES:
+                continue  # running: use Cancel first
+            rows.append(row)
         self._model.remove_rows(rows)
         self._refresh_target_choice()
         self._update_buttons()
@@ -303,6 +334,8 @@ class MainWindow(QMainWindow):
         self._refresh_route_options()
 
     def _apply_target(self, index: int) -> None:
+        if index < 0:
+            return  # nothing chosen (e.g. the list is empty)
         target = self._registry.get_format(self.target_combo.itemData(index))
         for row in self._rows_for_target_choice():
             self._model.update_job(self._model.job_at(row).id, target=target)
@@ -363,6 +396,41 @@ class MainWindow(QMainWindow):
             self._route_options_layout.addWidget(widget)
             self.option_widgets[option.name] = widget
         self._route_options_layout.addStretch()
+        self._link_presets(route)
+
+    def _link_presets(self, route: Route) -> None:
+        """A preset fills in the options it implies; editing one of them means Custom."""
+        for preset in route.options:
+            if not (isinstance(preset, ChoiceOption) and preset.implies):
+                continue
+            combo = self.option_widgets[preset.name]
+            combo.currentIndexChanged.connect(partial(self._apply_preset, preset, combo))
+            implied_names = {name for _, values in preset.implies for name, _ in values}
+            for name in implied_names:
+                widget = self.option_widgets.get(name)
+                if isinstance(widget, QSpinBox):
+                    widget.valueChanged.connect(partial(self._override_preset, preset, combo, name))
+
+    def _apply_preset(self, preset: ChoiceOption, combo: QComboBox, index: int) -> None:
+        self._applying_preset = True  # these changes come from the preset, not the user
+        try:
+            for name, value in preset.implied(combo.itemData(index)).items():
+                widget = self.option_widgets.get(name)
+                if isinstance(widget, QSpinBox):
+                    widget.setValue(int(value))  # also stores the value via _set_option
+        finally:
+            self._applying_preset = False
+
+    def _override_preset(
+        self, preset: ChoiceOption, combo: QComboBox, name: str, value: int
+    ) -> None:
+        if self._applying_preset:
+            return
+        chosen = preset.implied(combo.currentData())
+        if name in chosen and chosen[name] != value:
+            # The user picked their own value: the preset no longer applies.
+            custom = next(choice for choice, _ in preset.choices if not preset.implied(choice))
+            combo.setCurrentIndex(combo.findData(custom))
 
     def _set_option(self, name: str, value: OptionValue) -> None:
         for row in self._rows_for_target_choice():
@@ -429,23 +497,117 @@ class MainWindow(QMainWindow):
         # Only READY jobs are picked, and queuing moves them out of READY, so pressing
         # Convert again can never schedule the same job twice.
         ready = [job for job in self._model.jobs() if job.state is JobState.READY and job.target]
-        for job in ready:
-            request = ConversionRequest(
-                job.source,
-                job.target.id,
-                output_dir or job.source.parent,
-                dict(job.options),
-                job.extra_sources,
-                preserve_metadata=self.preserve_metadata_box.isChecked(),
+        items = [
+            (
+                job,
+                ConversionRequest(
+                    job.source,
+                    job.target.id,
+                    output_dir or job.source.parent,
+                    dict(job.options),
+                    job.extra_sources,
+                    preserve_metadata=self.preserve_metadata_box.isChecked(),
+                ),
             )
-            self._model.set_state(job.id, JobState.QUEUED, request=request)
-            self._queue.submit(job.id)
+            for job in ready
+        ]
+        self._enqueue(items)
         if ready:
             self.statusBar().showMessage(self.tr("Converting {0} file(s)…").format(len(ready)))
             self._save_settings()
-        self._start_jobs()
         self._refresh_target_choice()
         self._update_buttons()
+
+    def _enqueue(self, items: list[tuple[Job, ConversionRequest]]) -> None:
+        """Plan output file names and queue the jobs, in list order.
+
+        Names are chosen now, not when each job finishes, so that jobs of one batch that
+        would produce the same file name get predictable names: the earlier job in the
+        list gets "photo.jpg", the next one "photo (1).jpg", whatever finishes first.
+        """
+        active = [
+            job
+            for job in self._model.jobs()
+            if job.state in ACTIVE_STATES and job.request is not None
+        ]
+        stems = plan_output_stems(
+            [self._planned_output(job, request) for job, request in items],
+            reserved=[self._planned_output(job, job.request) for job in active],
+        )
+        for (job, request), stem in zip(items, stems, strict=True):
+            request = dataclasses.replace(request, output_stem=stem)
+            self._model.set_state(job.id, JobState.QUEUED, request=request)
+            self._queue.submit(job.id)
+        self._start_jobs()
+
+    def _planned_output(self, job: Job, request: ConversionRequest) -> PlannedOutput:
+        target = self._registry.get_format(request.target_format)
+        route = self._route_of(job)
+        return PlannedOutput(
+            request.output_dir,
+            request.output_stem or request.source.stem,
+            target.preferred_extension,
+            check_disk=not (route and route.multi_output),
+        )
+
+    # --- retrying failed jobs -----------------------------------------------
+
+    def _jobs_to_retry(self) -> list[Job]:
+        """Selected failed jobs, or every failed job if no row is selected."""
+        selected = [self._model.job_at(row) for row in self._selected_rows()]
+        jobs = selected or self._model.jobs()
+        return [job for job in jobs if job.can_retry]
+
+    def retry_failed(self) -> None:
+        """Run failed jobs again as new attempts with their original request.
+
+        The failed job stays in the list as history and is marked as retried, so it can
+        never be started twice. Successful and cancelled jobs are never rerun.
+        """
+        if self._shutting_down:
+            return
+        items, problems = [], []
+        for job in self._jobs_to_retry():
+            if problem := self._retry_problem(job):
+                problems.append(f"{job.source.name}: {problem}")
+                continue
+            attempt = Job(
+                next(self._job_ids),
+                job.source,
+                job.targets,
+                job.target,
+                source_format=job.source_format,
+                options=dict(job.options),
+                extra_sources=job.extra_sources,
+                attempt=job.attempt + 1,
+            )
+            self._model.update_job(job.id, retried=True)
+            self._model.insert_job(self._model.row_of(job.id) + 1, attempt)
+            # Same input, target, options, output folder and privacy choice; the output
+            # name is planned again, so an earlier result is never touched.
+            items.append((attempt, dataclasses.replace(job.request, output_stem=None)))
+        if items:
+            self._enqueue(items)
+            self.statusBar().showMessage(self.tr("Retrying {0} failed job(s)…").format(len(items)))
+        if problems:
+            QMessageBox.warning(self, self.tr("Some jobs cannot be retried"), "\n".join(problems))
+        self._refresh_target_choice()
+        self._update_buttons()
+
+    def _retry_problem(self, job: Job) -> str | None:
+        """Why a failed job cannot run again now, or None."""
+        request = job.request
+        for path in request.sources:
+            if not path.is_file():
+                return self.tr("the file {0} no longer exists.").format(path)
+        if not request.output_dir.is_dir():
+            return self.tr("the output folder {0} no longer exists.").format(request.output_dir)
+        try:
+            source_format = self._registry.detect_format(request.source)
+            self._registry.find_route(source_format.id, request.target_format)
+        except ConversionError as exc:
+            return str(exc)
+        return None
 
     def _start_jobs(self) -> None:
         """Hand jobs to worker threads while the queue has free slots."""
@@ -494,7 +656,8 @@ class MainWindow(QMainWindow):
             self._update_buttons()
 
     def _show_summary(self) -> None:
-        states = [job.state for job in self._model.jobs()]
+        # Failed attempts that were retried are history, not open failures.
+        states = [job.state for job in self._model.jobs() if not job.retried]
         self.statusBar().showMessage(
             self.tr("Finished: {0} converted, {1} failed, {2} cancelled.").format(
                 states.count(JobState.SUCCEEDED),
@@ -606,9 +769,13 @@ class MainWindow(QMainWindow):
             and any(job.state is JobState.READY and job.target for job in self._model.jobs())
         )
         self.remove_button.setEnabled(
-            open_for_changes and any(job.state not in ACTIVE_STATES for job in selected)
+            open_for_changes
+            and any(
+                job.state not in ACTIVE_STATES or job.state is JobState.QUEUED for job in selected
+            )
         )
         self.cancel_button.setEnabled(
             any(job.state in (JobState.QUEUED, JobState.RUNNING) for job in selected)
         )
         self.combine_button.setEnabled(open_for_changes and len(self._combinable_rows()) >= 2)
+        self.retry_button.setEnabled(open_for_changes and bool(self._jobs_to_retry()))

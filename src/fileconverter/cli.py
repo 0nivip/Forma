@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from fileconverter.app import build_registry
-from fileconverter.conversion.backends.images import QUALITY_OPTIONS
+from fileconverter.conversion.backends.images import PRESET_LABELS, PRESET_QUALITY, QUALITY_OPTIONS
 from fileconverter.conversion.backends.spreadsheets import (
     DECIMAL_OPTION,
     DELIMITER_OPTION,
@@ -58,6 +58,18 @@ def _build_parser() -> argparse.ArgumentParser:
         for fmt, option in QUALITY_OPTIONS.items()
     )
     convert.add_argument("--quality", type=int, help=f"quality for lossy formats: {quality_help}")
+    preset_help = "; ".join(
+        f"{codec.upper()} " + ", ".join(f"{name} {value}" for name, value in values.items())
+        for codec, values in PRESET_QUALITY.items()
+    )
+    convert.add_argument(
+        "--preset",
+        choices=[value for value, _ in PRESET_LABELS],
+        help=(
+            f"quality preset for JPEG/WebP/AVIF ({preset_help}); 'custom' (default) uses "
+            "--quality. Combining another preset with a different --quality is an error"
+        ),
+    )
     convert.add_argument("--pages", help="PDF to images: page range, e.g. 1-3,5 (default: all)")
     convert.add_argument("--dpi", type=int, help="PDF to images: resolution (default: 150)")
     convert.add_argument(
@@ -113,6 +125,7 @@ def _list_formats(registry: FormatRegistry) -> int:
 def _options(args: argparse.Namespace) -> dict[str, object]:
     """Only options given on the command line; the route supplies defaults for the rest."""
     given = {
+        "preset": args.preset,
         "quality": args.quality,
         "pages": args.pages,
         "dpi": args.dpi,

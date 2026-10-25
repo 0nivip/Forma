@@ -97,6 +97,9 @@ class JobTableModel(QAbstractTableModel):
     def job(self, job_id: int) -> Job:
         return self._jobs[self._row_of(job_id)]
 
+    def row_of(self, job_id: int) -> int:
+        return self._row_of(job_id)
+
     def set_state(self, job_id: int, state: JobState, **changes: object) -> None:
         """Change a job's state (validated) and optionally other fields in one update."""
         row = self._row_of(job_id)
@@ -125,9 +128,12 @@ class JobTableModel(QAbstractTableModel):
 
     def _display_text(self, job: Job, column: Column) -> str:
         if column == Column.FILE:
+            name = job.source.name
             if job.extra_sources:
-                return self.tr("{0} + {1} more").format(job.source.name, len(job.extra_sources))
-            return job.source.name
+                name = self.tr("{0} + {1} more").format(name, len(job.extra_sources))
+            if job.attempt > 1:
+                name = self.tr("{0} (attempt {1})").format(name, job.attempt)
+            return name
         if column == Column.TARGET:
             return job.target.display_name if job.target else "—"
         if column == Column.STATUS:
@@ -161,6 +167,8 @@ class JobTableModel(QAbstractTableModel):
                 return self.tr("Cancelling…")
             case JobState.SUCCEEDED:
                 return self.tr("Done")
+            case JobState.FAILED if job.retried:
+                return self.tr("Failed (retried)")  # a newer attempt is listed below
             case JobState.FAILED:
                 return self.tr("Failed")
             case JobState.CANCELLED:
@@ -228,4 +236,6 @@ class JobTableModel(QAbstractTableModel):
             )
         elif job.state in (JobState.FAILED, JobState.UNSUPPORTED):
             icon = QStyle.StandardPixmap.SP_MessageBoxCritical
+        elif job.state is JobState.CANCELLED:
+            icon = QStyle.StandardPixmap.SP_DialogCancelButton
         return QApplication.style().standardIcon(icon) if icon is not None else None

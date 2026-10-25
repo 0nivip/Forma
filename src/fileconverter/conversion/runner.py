@@ -87,7 +87,12 @@ def run_job(
             ctx.raise_if_cancelled()
             _check_output_written(temp_path)
             output_paths = [
-                _move_into_place(temp_path, request.source.stem, request.output_dir, extension)
+                _move_into_place(
+                    temp_path,
+                    request.output_stem or request.source.stem,
+                    request.output_dir,
+                    extension,
+                )
             ]
             temp_path = None  # now owned by the user; must not be deleted
         ctx.report_progress(1.0)
@@ -210,7 +215,7 @@ def _commit_parts(
     committed: list[Path] = []
     try:
         for part in parts:
-            stem = request.source.stem
+            stem = request.output_stem or request.source.stem
             if part.name_suffix:
                 stem = f"{stem}_{part.name_suffix}"
             committed.append(_move_into_place(part.path, stem, request.output_dir, extension))

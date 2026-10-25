@@ -59,6 +59,13 @@ class ChoiceOption:
     choices: tuple[tuple[str, str], ...]  # (value, human-readable label)
     default: str
     help: str = ""
+    # Presets: a choice may set other options of the same route, e.g.
+    # ("small", (("quality", 60),)). A choice without an entry sets nothing.
+    implies: tuple[tuple[str, tuple[tuple[str, OptionValue], ...]], ...] = ()
+
+    def implied(self, choice: str) -> dict[str, OptionValue]:
+        """The option values a choice sets (empty for e.g. a 'Custom' choice)."""
+        return dict(dict(self.implies).get(choice, ()))
 
     def validate(self, value: object) -> str:
         values = [choice for choice, _ in self.choices]
@@ -87,7 +94,12 @@ class Route:
     multi_input: bool = False
 
     def resolve_options(self, given: Mapping[str, object]) -> dict[str, OptionValue]:
-        """Validate user-supplied options and fill in defaults."""
+        """Validate user-supplied options and fill in defaults.
+
+        A preset (ChoiceOption.implies) sets the values of other options. Giving one of
+        those options explicitly with a different value is a contradiction and is
+        rejected; to choose the value yourself, pick the preset's "custom" choice.
+        """
         known = {option.name: option for option in self.options}
         unknown = set(given) - set(known)
         if unknown:
@@ -95,10 +107,22 @@ class Route:
             raise InvalidOptionError(
                 f"Unsupported option(s) for {self.source} -> {self.target}: {names}."
             )
-        return {
+        values = {
             name: option.validate(given[name]) if name in given else option.default
             for name, option in known.items()
         }
+        for option in self.options:
+            if not isinstance(option, ChoiceOption):
+                continue
+            for name, implied in option.implied(str(values[option.name])).items():
+                if name in given and values[name] != implied:
+                    raise InvalidOptionError(
+                        f"'{name}' {values[name]} contradicts {option.name} "
+                        f"'{values[option.name]}', which sets {name} {implied}. Choose the "
+                        f"custom {option.name} to set {name} yourself."
+                    )
+                values[name] = implied
+        return values
 
 
 @dataclass(frozen=True)
@@ -111,6 +135,9 @@ class ConversionRequest:
     extra_sources: tuple[Path, ...] = ()
     # False: backends try to strip transferable metadata (EXIF, GPS, tags, chapters, ...).
     preserve_metadata: bool = False
+    # Name for the output without extension, planned when the job is queued (see
+    # output_paths.plan_output_stems); None means the source file's stem.
+    output_stem: str | None = None
 
     @property
     def sources(self) -> tuple[Path, ...]:

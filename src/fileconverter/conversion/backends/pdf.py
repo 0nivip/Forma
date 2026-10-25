@@ -31,6 +31,7 @@ from PIL import Image, UnidentifiedImageError
 
 from fileconverter.conversion.backends.images import (
     JPEG_QUALITY,
+    PRESET_OPTIONS,
     load_first_frame,
     prepare_for_target,
 )
@@ -70,7 +71,7 @@ class PdfConverter:
 
     def routes(self) -> Iterator[Route]:
         yield Route("pdf", "png", (DPI_OPTION, PAGES_OPTION), (NOTE_PAGES,), multi_output=True)
-        jpeg_options = (DPI_OPTION, PAGES_OPTION, JPEG_QUALITY)
+        jpeg_options = (DPI_OPTION, PAGES_OPTION, PRESET_OPTIONS["jpeg"], JPEG_QUALITY)
         yield Route("pdf", "jpeg", jpeg_options, (NOTE_PAGES,), multi_output=True)
         for format_id in self._image_sources:
             yield Route(format_id, "pdf", notes=(NOTE_TO_PDF,), multi_input=True)
