@@ -104,7 +104,8 @@ it on a normal exit, but not necessarily on a hard kill.
 
 **XLSX → CSV** — one CSV per worksheet (`book_<sheet>.csv`, or `book.csv` if the
 workbook has a single worksheet). Options: one worksheet by number or name; delimiter;
-handling of formula-like text. GUI and CLI use the same options and defaults.
+decimal separator; handling of formula-like text. GUI and CLI use the same options and
+defaults (CLI: `--sheet`, `--delimiter`, `--decimal`, `--formulas`).
 - Encoding: UTF-8 **with BOM** (so Excel detects the encoding). Line endings CRLF
   (RFC 4180); line breaks inside a cell are kept inside double quotes.
 - Delimiter: **semicolon (default**, as expected by e.g. German Excel), comma, or tab —
@@ -112,9 +113,17 @@ handling of formula-like text. GUI and CLI use the same options and defaults.
   the delimiter, a quote or a line break; quotes inside are doubled.
 - Values: the results Excel last saved. Formula cells without a saved result (files
   never recalculated in Excel) are exported as their formula text, with a warning.
-  Numbers as stored (not as displayed; always `.` as decimal point, which some
-  regional Excel versions may read as a date or text), dates as ISO 8601, booleans as
-  TRUE/FALSE.
+  Numbers as stored (not as displayed, full precision, no thousands separators),
+  dates as ISO 8601, booleans as TRUE/FALSE.
+- Decimal separator: **comma (default**, `1.5` → `1,5`, to match the semicolon
+  delimiter of German Excel) or dot (`--decimal dot`). It is applied only to cells
+  that the workbook stores as numbers (including saved formula results); text cells
+  stay exactly as stored even when they look numeric (`"1.5"`, `"001.50"`,
+  `"Product 1.5"`), and dates, times and exported formula text are never changed.
+  Very large or small numbers keep their exponent form (`1,5e+20`). With comma as
+  both delimiter and decimal separator, such numbers are quoted (`"1,5"`) — valid CSV,
+  but the semicolon delimiter is the better match. CSV does not record cell types:
+  whether a program reads `1,5` as a number depends on its regional settings.
 - Sheet names are made safe for Windows file names (`<>:"/\|?*`, reserved names
   such as `CON`) and de-duplicated (`_2`, `_3`, ...).
 - Not exported: formatting, charts, comments, merged-cell layout, or several
@@ -247,7 +256,7 @@ all process handling is also covered by tests that do not need FFmpeg.
 .\.venv\Scripts\python.exe -m fileconverter convert report.docx --to html --out-dir out
 .\.venv\Scripts\python.exe -m fileconverter convert book.xlsx --to csv                # every sheet
 .\.venv\Scripts\python.exe -m fileconverter convert book.xlsx --to csv --sheet "Q1"   # one sheet
-.\.venv\Scripts\python.exe -m fileconverter convert book.xlsx --to csv --delimiter comma --formulas raw
+.\.venv\Scripts\python.exe -m fileconverter convert book.xlsx --to csv --delimiter comma --decimal dot --formulas raw
 .\.venv\Scripts\python.exe -m fileconverter convert photo.jpg --to png --preserve-metadata
 .\.venv\Scripts\python.exe -m fileconverter convert doc.pdf --to png --pages 1-3 --dpi 300
 .\.venv\Scripts\python.exe -m fileconverter convert doc.pdf --to jpeg --quality 85

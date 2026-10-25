@@ -8,8 +8,11 @@ CRLF line endings (RFC 4180). Line breaks inside a cell are kept inside quotes.
 Values: what Excel last calculated and saved. A formula cell without a saved result
 (e.g. the file was produced by a program and never opened in Excel) is exported as
 its formula text such as "=SUM(A1:A3)", and a warning says how many cells this was.
-Numbers are written as stored (not as displayed, always with "." as decimal point),
-dates as ISO 8601, booleans as TRUE/FALSE. Formatting, charts, comments and
+Numbers are written as stored (not as displayed, full precision), with a decimal
+comma (default, matching the semicolon delimiter of German Excel) or a decimal dot.
+Only cells that openpyxl reads as numbers are affected: text that merely looks like
+a number ("1.5", "001.50"), dates, times and formula text are never changed.
+Dates as ISO 8601, booleans as TRUE/FALSE. Formatting, charts, comments and
 merged-cell layout are not exported.
 
 Formula injection: spreadsheet programs run cell text such as "=HYPERLINK(...)" or
@@ -48,6 +51,16 @@ DELIMITER_OPTION = ChoiceOption(
     (("semicolon", "Semicolon (;)"), ("comma", "Comma (,)"), ("tab", "Tab")),
     default="semicolon",
 )
+DECIMAL_OPTION = ChoiceOption(
+    "decimal",
+    "Decimal separator",
+    (("comma", "Comma (,)"), ("dot", "Dot (.)")),
+    default="comma",
+    help=(
+        "Used for numeric cells only (1.5 becomes 1,5 with Comma). Text cells, dates and "
+        "formulas are written unchanged."
+    ),
+)
 FORMULAS_OPTION = ChoiceOption(
     "formulas",
     "Formula-like text",
@@ -73,7 +86,7 @@ _PLAIN_NUMBER = re.compile(r"^[+-]?(\d+([.,]\d*)?|[.,]\d+)([eE][+-]?\d+)?$")
 
 class SpreadsheetConverter:
     def routes(self) -> Iterator[Route]:
-        options = (SHEET_OPTION, DELIMITER_OPTION, FORMULAS_OPTION)
+        options = (SHEET_OPTION, DELIMITER_OPTION, DECIMAL_OPTION, FORMULAS_OPTION)
         yield Route("xlsx", "csv", options=options, notes=(NOTE_CSV,), multi_output=True)
 
     def convert(
@@ -109,6 +122,7 @@ class SpreadsheetConverter:
             )
 
         delimiter = DELIMITERS[str(options.get("delimiter", DELIMITER_OPTION.default))]
+        decimal_comma = options.get("decimal", DECIMAL_OPTION.default) == "comma"
         protect = options.get("formulas", FORMULAS_OPTION.default) == "protect"
         parts = []
         for done, (index, name, suffix) in enumerate(zip(indexes, names, suffixes, strict=True)):
@@ -119,6 +133,7 @@ class SpreadsheetConverter:
                 formulas_book.worksheets[index],
                 path,
                 delimiter,
+                decimal_comma,
                 protect,
                 ctx,
             )
@@ -178,7 +193,13 @@ class _SheetStats:
 
 
 def _write_csv(
-    values_sheet, formulas_sheet, path: Path, delimiter: str, protect: bool, ctx: JobContext
+    values_sheet,
+    formulas_sheet,
+    path: Path,
+    delimiter: str,
+    decimal_comma: bool,
+    protect: bool,
+    ctx: JobContext,
 ) -> _SheetStats:
     """Write one worksheet as CSV."""
     # The declared size keeps normal sheets rectangular; resetting it afterwards makes
@@ -206,7 +227,7 @@ def _write_csv(
                 if value is None and cell is not None and cell.data_type == "f":
                     stats.unsaved += 1
                     value = getattr(cell.value, "text", cell.value)  # ArrayFormula -> text
-                text = _format(value)
+                text = _format(value, decimal_comma)
                 if protect and isinstance(value, str):  # numbers, dates etc. stay as they are
                     safe = protect_cell(text)
                     stats.protected += safe != text
@@ -237,7 +258,7 @@ def protect_cell(text: str) -> str:
     return text
 
 
-def _format(value: object) -> str:
+def _format(value: object, decimal_comma: bool = False) -> str:
     if value is None:
         return ""
     if isinstance(value, bool):
@@ -249,5 +270,9 @@ def _format(value: object) -> str:
     if isinstance(value, (datetime.date, datetime.time)):
         return value.isoformat()
     if isinstance(value, float):
-        return repr(value)  # shortest exact form, e.g. 0.1 rather than 0.10000000000000001
-    return str(value)
+        # Shortest exact form, e.g. 0.1 rather than 0.10000000000000001. A float's repr
+        # holds only digits, a sign, one "." and an exponent ("1.5e+20"), so swapping
+        # the "." cannot touch anything else. Integers have no decimal part.
+        text = repr(value)
+        return text.replace(".", ",") if decimal_comma else text
+    return str(value)  # text (incl. number-like text), ints and anything else unchanged

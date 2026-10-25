@@ -16,7 +16,11 @@ import sys
 from pathlib import Path
 
 from fileconverter.app import build_registry
-from fileconverter.conversion.backends.spreadsheets import DELIMITER_OPTION, FORMULAS_OPTION
+from fileconverter.conversion.backends.spreadsheets import (
+    DECIMAL_OPTION,
+    DELIMITER_OPTION,
+    FORMULAS_OPTION,
+)
 from fileconverter.conversion.runner import run_job
 from fileconverter.core.models import ConversionRequest, JobStatus
 from fileconverter.core.registry import FormatRegistry
@@ -60,6 +64,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"XLSX to CSV: field delimiter (default: {DELIMITER_OPTION.default})",
     )
     convert.add_argument(
+        "--decimal",
+        choices=[value for value, _ in DECIMAL_OPTION.choices],
+        help=(
+            "XLSX to CSV: decimal separator for numeric cells; text, dates and formulas are "
+            f"never changed (default: {DECIMAL_OPTION.default})"
+        ),
+    )
+    convert.add_argument(
         "--formulas",
         choices=[value for value, _ in FORMULAS_OPTION.choices],
         help=(
@@ -101,6 +113,7 @@ def _options(args: argparse.Namespace) -> dict[str, object]:
         "dpi": args.dpi,
         "sheet": args.sheet,
         "delimiter": args.delimiter,
+        "decimal": args.decimal,
         "formulas": args.formulas,
     }
     return {name: value for name, value in given.items() if value is not None}

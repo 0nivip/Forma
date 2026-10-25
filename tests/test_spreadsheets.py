@@ -58,7 +58,7 @@ def test_single_sheet_uses_plain_name_and_documented_dialect(registry, tmp_path)
     )
     original = source.read_bytes()
 
-    result = convert(registry, source, delimiter="comma")
+    result = convert(registry, source, delimiter="comma", decimal="dot")
 
     assert result.status is JobStatus.SUCCEEDED, result.error
     assert [p.name for p in result.output_paths] == ["book.csv"]
@@ -163,7 +163,7 @@ def test_value_formatting(registry, tmp_path):
     ]
     source = make_workbook(tmp_path / "v.xlsx", {"S": [row]})
 
-    result = convert(registry, source, delimiter="comma")
+    result = convert(registry, source, delimiter="comma", decimal="dot")
 
     assert read(result.output_path) == (
         BOM + "TRUE,FALSE,2024-01-31,2024-01-31 13:45:07,0.1,42,,end\r\n"
@@ -193,16 +193,16 @@ def test_default_dialect_is_semicolon_with_bom(registry, tmp_path):
 
     assert result.output_path.read_bytes().startswith(b"\xef\xbb\xbf")
     assert read(result.output_path) == (
-        BOM + '"Ёлka; Größe";a,b;tab\there\r\n"say ""hi""";"multi\nline";-1.5\r\n'
+        BOM + '"Ёлka; Größe";a,b;tab\there\r\n"say ""hi""";"multi\nline";-1,5\r\n'
     )
 
 
 @pytest.mark.parametrize(
     ("delimiter", "expected"),
     [
-        ("semicolon", '"Ёлka; Größe";a,b;tab\there\r\n"say ""hi""";"multi\nline";-1.5\r\n'),
-        ("comma", 'Ёлka; Größe,"a,b",tab\there\r\n"say ""hi""","multi\nline",-1.5\r\n'),
-        ("tab", 'Ёлka; Größe\ta,b\t"tab\there"\r\n"say ""hi"""\t"multi\nline"\t-1.5\r\n'),
+        ("semicolon", '"Ёлka; Größe";a,b;tab\there\r\n"say ""hi""";"multi\nline";-1,5\r\n'),
+        ("comma", 'Ёлka; Größe,"a,b",tab\there\r\n"say ""hi""","multi\nline","-1,5"\r\n'),
+        ("tab", 'Ёлka; Größe\ta,b\t"tab\there"\r\n"say ""hi"""\t"multi\nline"\t-1,5\r\n'),
     ],
 )
 def test_each_delimiter_quotes_what_it_must(registry, tmp_path, delimiter, expected):
@@ -224,6 +224,145 @@ def test_delimiter_applies_to_every_worksheet(registry, tmp_path):
 def test_unknown_delimiter_is_rejected(registry, tmp_path):
     source = make_workbook(tmp_path / "book.xlsx", {"S": [[1]]})
     assert isinstance(convert(registry, source, delimiter="pipe").error, InvalidOptionError)
+    assert outputs(tmp_path) == []
+
+
+# --- decimal separator ----------------------------------------------------------
+
+NUMBERS = [1.5, -1.5, 42, -7, 0, 0.1, 1234567.891, 0.000123, 1.5e20, -2.5e-07]
+
+
+def test_numbers_use_decimal_comma_by_default(registry, tmp_path):
+    source = make_workbook(tmp_path / "n.xlsx", {"S": [NUMBERS]})
+
+    result = convert(registry, source)  # defaults: semicolon + decimal comma
+
+    assert read(result.output_path) == (
+        BOM + "1,5;-1,5;42;-7;0;0,1;1234567,891;0,000123;1,5e+20;-2,5e-07\r\n"
+    )
+
+
+def test_decimal_dot_keeps_python_number_text(registry, tmp_path):
+    source = make_workbook(tmp_path / "n.xlsx", {"S": [NUMBERS]})
+
+    result = convert(registry, source, decimal="dot")
+
+    assert read(result.output_path) == (
+        BOM + "1.5;-1.5;42;-7;0;0.1;1234567.891;0.000123;1.5e+20;-2.5e-07\r\n"
+    )
+
+
+def test_full_precision_survives_the_comma(registry, tmp_path):
+    value = 0.1 + 0.2  # 0.30000000000000004: must not be rounded away
+    source = make_workbook(tmp_path / "n.xlsx", {"S": [[0.5]]})
+    # openpyxl itself rounds floats when writing, so store the exact value in the XML,
+    # as Excel would.
+    with zipfile.ZipFile(source) as archive:
+        items = {item.filename: archive.read(item) for item in archive.infolist()}
+    sheet = "xl/worksheets/sheet1.xml"
+    items[sheet] = items[sheet].replace(b"<v>0.5</v>", f"<v>{value!r}</v>".encode())
+    with zipfile.ZipFile(source, "w") as archive:
+        for name, data in items.items():
+            archive.writestr(name, data)
+
+    text = read(convert(registry, source).output_path)[1:].strip()
+
+    assert text == "0,30000000000000004"
+    assert float(text.replace(",", ".")) == value
+
+
+@pytest.mark.parametrize("decimal", ["comma", "dot"])
+def test_text_dates_and_formulas_are_never_changed(registry, tmp_path, decimal):
+    row = [
+        "Product 1.5",
+        "001.50",
+        "1,5",
+        "1.5",  # number-looking text stays text: it is stored as a string
+        "v1.2.3",
+        datetime.datetime(2024, 1, 31, 13, 45, 7, 500000),
+        datetime.time(8, 30, 15, 250000),
+        "=A1*1.5",  # formula without saved result: its text is exported
+    ]
+    source = make_workbook(tmp_path / "t.xlsx", {"S": [row]})
+
+    result = convert(registry, source, decimal=decimal, formulas="raw")
+
+    assert read(result.output_path) == (
+        BOM + "Product 1.5;001.50;1,5;1.5;v1.2.3;2024-01-31 13:45:07.500000;"
+        "08:30:15.250000;=A1*1.5\r\n"
+    )
+
+
+def test_saved_formula_results_are_numbers(registry, tmp_path):
+    source = make_workbook(tmp_path / "f.xlsx", {"S": [[3, "=A1/4"]]})
+    set_cached_value(source, "xl/worksheets/sheet1.xml", "0.75")
+
+    assert read(convert(registry, source).output_path) == BOM + "3;0,75\r\n"
+
+
+def test_decimal_comma_with_comma_delimiter_is_quoted(registry, tmp_path):
+    source = make_workbook(
+        tmp_path / "q.xlsx", {"S": [[1.5, "a;b", 'say "hi"', "two\nlines", "x,y"]]}
+    )
+
+    result = convert(registry, source, delimiter="comma")
+
+    text = read(result.output_path)
+    assert text == BOM + '"1,5",a;b,"say ""hi""","two\nlines","x,y"\r\n'
+    assert next(csv.reader(io.StringIO(text[1:]))) == [
+        "1,5",
+        "a;b",
+        'say "hi"',
+        "two\nlines",
+        "x,y",
+    ]
+
+
+def test_semicolon_and_decimal_comma_for_german_excel(registry, tmp_path):
+    source = make_workbook(
+        tmp_path / "de.xlsx", {"S": [["Preis", "Menge"], [12.99, 3], ["Größe; Maß", -0.5]]}
+    )
+
+    text = read(convert(registry, source, delimiter="semicolon", decimal="comma").output_path)
+
+    assert text == BOM + 'Preis;Menge\r\n12,99;3\r\n"Größe; Maß";-0,5\r\n'
+    rows = list(csv.reader(io.StringIO(text[1:]), delimiter=";"))
+    assert rows == [["Preis", "Menge"], ["12,99", "3"], ["Größe; Maß", "-0,5"]]
+
+
+def test_every_worksheet_uses_the_same_decimal_separator(registry, tmp_path):
+    source = make_workbook(tmp_path / "m.xlsx", {"A": [[1.25]], "B": [[-2.5]], "C": [[3]]})
+
+    result = convert(registry, source, decimal="dot", delimiter="tab")
+
+    assert [read(p) for p in result.output_paths] == [
+        BOM + "1.25\r\n",
+        BOM + "-2.5\r\n",
+        BOM + "3\r\n",
+    ]
+    result = convert(registry, source)
+    assert [read(p) for p in result.output_paths] == [
+        BOM + "1,25\r\n",
+        BOM + "-2,5\r\n",
+        BOM + "3\r\n",
+    ]
+
+
+@pytest.mark.parametrize("mode", ["protect", "raw"])
+def test_decimal_comma_does_not_interfere_with_formula_protection(registry, tmp_path, mode):
+    source = make_workbook(tmp_path / "p.xlsx", {"S": [[-1.5, "-1,5", "=1+1", "-x"]]})
+
+    text = read(convert(registry, source, formulas=mode).output_path)
+
+    if mode == "protect":  # numbers and number-like text untouched, formula text protected
+        assert text == BOM + "-1,5;-1,5;'=1+1;'-x\r\n"
+    else:
+        assert text == BOM + "-1,5;-1,5;=1+1;-x\r\n"
+
+
+def test_unknown_decimal_separator_is_rejected(registry, tmp_path):
+    source = make_workbook(tmp_path / "b.xlsx", {"S": [[1.5]]})
+    assert isinstance(convert(registry, source, decimal="space").error, InvalidOptionError)
     assert outputs(tmp_path) == []
 
 
@@ -269,7 +408,7 @@ def test_protect_mode_leaves_harmless_text_alone(registry, tmp_path, text):
 def test_numbers_are_never_prefixed(registry, tmp_path):
     source = make_workbook(tmp_path / "book.xlsx", {"S": [[-5, -1.5, 0, 3]]})
     result = convert(registry, source, delimiter="comma")
-    assert read(result.output_path) == BOM + "-5,-1.5,0,3\r\n"
+    assert read(result.output_path) == BOM + '-5,"-1,5",0,3\r\n'  # quoted: it holds the delimiter
 
 
 def test_unsaved_formula_is_exported_as_text_in_protect_mode(registry, tmp_path):
